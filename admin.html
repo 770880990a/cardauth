@@ -207,10 +207,8 @@ const NAV = [
   ['cards',  '▦', '卡密管理'],
   ['gen',    '＋', '卡密生成'],
   ['gencredit', '◉', '额度卡生成'],
-  ['types',  '◈', '卡类型'],
   ['users',  '☺', '用户额度'],
   ['agents', '⚑', '代理商'],
-  ['withdraw','¥', '提现审核'],
   ['logs',   '☰', '验证日志'],
   ['apidoc', '⌗', '对接文档'],
   ['setting','⚙', '系统设置'],
@@ -358,7 +356,7 @@ PAGES.dash = async (el) => {
     <div class="st"><div class="lb">代理商</div><div class="vl">${d.agents_total}</div>
       <div class="sub">冻结 ${d.agents_frozen} 个</div></div>
     <div class="st"><div class="lb">代理余额合计</div><div class="vl" style="font-size:21px">¥${d.agent_balance_total}</div>
-      <div class="sub">待审提现 ¥${d.withdraw_pending}</div></div>
+      <div class="sub">代理由管理员直接充余额</div></div>
   </div>
 
   <div class="card" style="margin-bottom:16px">
@@ -980,7 +978,7 @@ PAGES.gencredit = async (el) => {
     list.forEach(t => { TYPE_MAP[t.code] = t; });
 
     if (!list.length) {
-      $('#cType').innerHTML = '<option value="">（该应用没有额度卡，请先去「卡类型」创建）</option>';
+      $('#cType').innerHTML = '<option value="">（该应用暂无额度卡类型）</option>';
       $('#cBtn').disabled = true;
       return;
     }
@@ -1540,34 +1538,6 @@ async function agentDel(id) {
   if (!confirm('删除代理不会删除其已生成的卡密，确定？')) return;
   await req('/api/admin/agents/' + id, { method: 'DELETE' });
   toast('已删除', 'ok'); loadAgents();
-}
-
-/* ---------- 提现审核 ---------- */
-PAGES.withdraw = async (el) => {
-  const d = await req('/api/admin/withdrawals');
-  el.innerHTML = `<div class="card">
-    <div class="hd"><h2>提现申请</h2><span class="hint" style="margin:0">驳回会自动退回代理余额</span></div>
-    <div class="tbwrap">${!d.list.length ? '<div class="empty">暂无提现申请</div>' :
-    `<table class="tb tb-mobile">
-      <thead><tr><th>ID</th><th>代理</th><th>金额</th><th>收款账号</th><th>状态</th><th>申请时间</th><th>操作</th></tr></thead>
-      <tbody>${d.list.map(w => `<tr>
-        <td data-l="ID">#${w.id}</td>
-        <td data-l="代理">${esc(w.username || w.agent_id)}</td>
-        <td data-l="金额"><b>¥${w.amount}</b></td>
-        <td data-l="账号" class="mono" style="font-size:12px">${esc(w.account)}</td>
-        <td data-l="状态">${statusTag(w.status)}</td>
-        <td data-l="时间">${fmtTime(w.created_at)}</td>
-        <td data-l="操作">${w.status === 'pending'
-          ? `<button class="btn ok sm" onclick="wdDo(${w.id},'paid')">标记已打款</button>
-             <button class="btn danger sm" onclick="wdDo(${w.id},'rejected')">驳回</button>`
-          : '<span class="hint" style="margin:0">已处理</span>'}</td></tr>`).join('')}</tbody>
-    </table>`}</div></div>`;
-};
-
-async function wdDo(id, status) {
-  const remark = status === 'rejected' ? (prompt('驳回原因：', '信息有误') || '') : '';
-  await req('/api/admin/withdrawals/' + id, { body: { status, remark } });
-  toast('已处理', 'ok'); go('withdraw');
 }
 
 /* ---------- 验证日志 ---------- */

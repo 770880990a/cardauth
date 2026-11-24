@@ -745,36 +745,96 @@
       const users = await getAll('users');
       const logs = await getAll('verify_logs');
       const apps = await getAll('apps');
+      const types = await getAll('card_types');
+      const withdrawals = await getAll('withdrawals');
+      const t = now();
       const todayStart = new Date().setHours(0, 0, 0, 0);
 
+      // 趋势：total=当天验证次数，fail=失败次数
       const trend = [];
       for (let i = 6; i >= 0; i--) {
         const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i);
         const s = d.getTime(), e = s + 86400000;
+        const dayLogs = logs.filter(l => l.created_at >= s && l.created_at < e);
         trend.push({
           date: (d.getMonth() + 1) + '/' + d.getDate(),
-          count: logs.filter(l => l.created_at >= s && l.created_at < e).length,
+          total: dayLogs.length,
+          fail: dayLogs.filter(l => !l.ok).length,
+          count: dayLogs.length,
         });
       }
 
+      const todayLogs = logs.filter(l => l.created_at >= todayStart);
+      const vipActive = users.filter(u => u.expire_at && u.expire_at > t).length;
+      const creditTotal = users.reduce((s, u) => s + (u.total_credit || 0), 0);
+      const creditUsed = users.reduce((s, u) => s + (u.used_credit || 0), 0);
+      const agentBalance = agents.reduce((s, a) => s + (a.balance || 0), 0);
+      const withdrawPending = withdrawals
+        .filter(w => w.status === 'pending')
+        .reduce((s, w) => s + (w.amount || 0), 0);
+
       return {
         code: 0, msg: 'ok',
+
+        // 卡密
         cards_total: cards.length,
         cards_unused: cards.filter(c => c.status === 'unused').length,
         cards_used: cards.filter(c => c.status === 'used').length,
+        cards_expired: cards.filter(c => c.status === 'expired').length,
+        cards_disabled: cards.filter(c => c.status === 'disabled').length,
         cards_today: cards.filter(c => c.created_at >= todayStart).length,
-        agents_total: agents.length, users_total: users.length,
-        logs_today: logs.filter(l => l.created_at >= todayStart).length,
-        apps_total: apps.length, trend,
+
+        // 用户
+        users_total: users.length,
+        vip_active: vipActive,
+        credit_total: creditTotal,
+        credit_used: creditUsed,
+
+        // 验证
+        verify_today: todayLogs.length,
+        verify_fail_today: todayLogs.filter(l => !l.ok).length,
+        logs_today: todayLogs.length,
+
+        // 代理
+        agents_total: agents.length,
+        agents_frozen: agents.filter(a => a.frozen).length,
+        agent_balance_total: +agentBalance.toFixed(2),
+        withdraw_pending: +withdrawPending.toFixed(2),
+
+        // 系统
+        apps_total: apps.length,
+        server_time: new Date(t).toLocaleString('zh-CN', { hour12: false }),
+        uptime_min: Math.floor((t - (window.__SHIRAN_START__ || t)) / 60000),
+
+        trend,
         app_stats: apps.map(a => ({
-          app_id: a.app_id, name: a.name,
+          app_id: a.app_id,
+          name: a.name,
           cnt: cards.filter(c => c.app_id === a.app_id).length,
+          card_total: cards.filter(c => c.app_id === a.app_id).length,
+          card_unused: cards.filter(c => c.app_id === a.app_id && c.status === 'unused').length,
+          unused: cards.filter(c => c.app_id === a.app_id && c.status === 'unused').length,
+          type_count: types.filter(x => x.app_id === a.app_id).length,
         })),
       };
     }
 
     if (sub === 'apps') {
-      if (method === 'GET') return { code: 0, msg: 'ok', list: await getAll('apps') };
+      if (method === 'GET') {
+        const apps = await getAll('apps');
+        const cards = await getAll('cards');
+        const types = await getAll('card_types');
+        return {
+          code: 0, msg: 'ok',
+          list: apps.map(a => ({
+            ...a,
+            card_total: cards.filter(c => c.app_id === a.app_id).length,
+            card_unused: cards.filter(c => c.app_id === a.app_id && c.status === 'unused').length,
+            card_used: cards.filter(c => c.app_id === a.app_id && c.status === 'used').length,
+            type_total: types.filter(t => t.app_id === a.app_id).length,
+          })),
+        };
+      }
       if (method === 'POST') {
         const apps = await getAll('apps');
         if (apps.find(a => a.app_id === body.app_id)) return { code: 1001, msg: '该 app_id 已存在' };
@@ -1111,10 +1171,11 @@
       if (body.kw) {
         list = list.filter(l => (l.card_key || '').includes(body.kw) || (l.device_id || '').includes(body.kw));
       }
+      if (body.action) list = list.filter(l => l.action === body.action);
       if (body.ok !== undefined && body.ok !== '') {
         list = list.filter(l => l.ok === (body.ok === '1' || body.ok === 1 ? 1 : 0));
       }
-      return { code: 0, msg: 'ok', list: list.slice(0, 200) };
+      return { code: 0, msg: 'ok', total: list.length, list: list.slice(0, 200) };
     }
 
     if (sub === 'notices') {
@@ -1257,6 +1318,44 @@
       await ensureInit();
     },
   };
+
+  // 启动时间（用于"已运行"显示）
+  window.__SHIRAN_START__ = now();
+
+  // 拦截备份下载：静态页无法走 location.href，改成前端生成文件
+  document.addEventListener('click', async (e) => {
+    const a = e.target.closest('a, button');
+    if (!a) return;
+    const onclick = a.getAttribute && (a.getAttribute('onclick') || '');
+    const isBackup = onclick.includes('/api/admin/backup') ||
+      (a.tagName === 'A' && (a.getAttribute('href') || '').includes('/api/admin/backup'));
+    if (!isBackup) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    try {
+      const data = {};
+      for (const s of STORES) data[s] = await getAll(s);
+      const out = { exported_at: now(), version: '1.0.0-github', site: '释然团队', data };
+      const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const el = document.createElement('a');
+      const d = new Date();
+      const stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') +
+        String(d.getDate()).padStart(2, '0') + '_' + String(d.getHours()).padStart(2, '0') +
+        String(d.getMinutes()).padStart(2, '0');
+      el.href = url;
+      el.download = '释然团队备份_' + stamp + '.json';
+      document.body.appendChild(el);
+      el.click();
+      document.body.removeChild(el);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      if (window.toast) toast('备份已下载', 'ok');
+    } catch (err) {
+      if (window.toast) toast('备份失败：' + err.message, 'err');
+    }
+  }, true);
 
   // 启动时初始化
   ensureInit().then(() => {

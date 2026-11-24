@@ -390,10 +390,9 @@ async function loadAgCards() {
 function agPage(p) { agQ.page = p; loadAgCards(); }
 
 PAGES.money = async (el) => {
-  const [m, logs, wds] = await Promise.all([
+  const [m, logs] = await Promise.all([
     req('/api/agent/me', {}, 'agent_token'),
     req('/api/agent/logs', {}, 'agent_token'),
-    req('/api/agent/withdrawals', {}, 'agent_token'),
   ]);
   ME = m;
   el.innerHTML = `
@@ -401,41 +400,27 @@ PAGES.money = async (el) => {
     <div class="st b"><div class="lb">可用余额</div><div class="vl" style="font-size:24px">¥${m.agent.balance.toFixed(2)}</div></div>
     <div class="st g"><div class="lb">累计卡密</div><div class="vl">${m.stats.card_total}</div></div>
   </div>
-  <div class="grid2">
-    <div class="card"><div class="hd"><h2>申请提现</h2></div><div class="bd" style="display:flex;flex-direction:column;gap:12px">
-      <div class="f"><label>提现金额 ¥</label><input id="wAmt" type="number" step="0.01" placeholder="最低 10 元"></div>
-      <div class="f"><label>收款账号（支付宝/微信/银行卡）</label>
-        <textarea id="wAcc" rows="2" placeholder="支付宝 138****1234 张三"></textarea></div>
-      <button class="btn ok" id="wBtn">提交申请</button>
-      <div class="hint">提现由管理员审核打款，被驳回会自动退回余额。</div>
-    </div></div>
-    <div class="card"><div class="hd"><h2>提现记录</h2></div>
-      <div class="tbwrap">${!wds.list.length ? '<div class="empty">暂无记录</div>' :
-      `<table class="tb tb-mobile"><thead><tr><th>金额</th><th>状态</th><th>时间</th></tr></thead>
-        <tbody>${wds.list.map(w => `<tr>
-          <td data-l="金额">¥${w.amount}</td>
-          <td data-l="状态">${statusTag(w.status)}</td>
-          <td data-l="时间">${fmtTime(w.created_at)}</td></tr>`).join('')}</tbody></table>`}</div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="bd">
+      <div class="hint" style="margin:0;line-height:1.9">
+        <b>余额说明</b><br>
+        · 余额由管理员直接充值，用于从系统拿卡<br>
+        · 如需补充余额，请联系管理员<br>
+        · 下级代理拿卡时，你会自动获得 20% 分润，实时到账
+      </div>
     </div>
   </div>
-  <div class="card" style="margin-top:14px"><div class="hd"><h2>资金流水</h2></div>
+  <div class="card"><div class="hd"><h2>资金流水</h2></div>
     <div class="tbwrap">${!logs.list.length ? '<div class="empty">暂无流水</div>' :
     `<table class="tb tb-mobile"><thead><tr><th>类型</th><th>变动</th><th>余额</th><th>说明</th><th>时间</th></tr></thead>
       <tbody>${logs.list.map(l => `<tr>
-        <td data-l="类型">${({generate:'生成卡',profit:'下级分润',withdraw:'提现',manual:'管理员'})[l.type] || l.type}</td>
+        <td data-l="类型">${({generate:'生成卡',profit:'下级分润',withdraw:'提现',manual:'管理员',adjust:'管理员调整'})[l.type] || l.type}</td>
         <td data-l="变动" style="color:${l.delta >= 0 ? 'var(--ok)' : 'var(--err)'};font-weight:600">
           ${l.delta >= 0 ? '+' : ''}${l.delta.toFixed(2)}</td>
         <td data-l="余额">¥${l.balance.toFixed(2)}</td>
         <td data-l="说明" style="font-size:12px">${esc(l.remark || '-')}</td>
         <td data-l="时间" style="font-size:12px">${fmtTime(l.created_at)}</td></tr>`).join('')}</tbody></table>`}</div>
   </div>`;
-
-  $('#wBtn').onclick = async () => {
-    const amount = parseFloat($('#wAmt').value);
-    if (!amount || amount < 10) return toast('提现金额不低于 10 元', 'err');
-    await req('/api/agent/withdraw', { body: { amount, account: $('#wAcc').value } }, 'agent_token');
-    toast('申请已提交', 'ok'); go('money');
-  };
 };
 
 PAGES.docs = async (el) => {
