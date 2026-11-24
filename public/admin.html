@@ -1,0 +1,3108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#101828">
+<title>管理后台 · 释然团队</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ 登录 ============ -->
+<div id="loginView" class="login-wrap">
+  <div class="login-box">
+    <h2>释然团队</h2>
+    <p class="sub">管理员登录</p>
+    <div class="f"><label>管理员账号</label><input id="lgUser" placeholder="admin" autocomplete="username"></div>
+    <div class="f"><label>密码</label><input id="lgPwd" type="password" placeholder="请输入密码" autocomplete="current-password"></div>
+    <button class="btn" id="lgBtn">登 录</button>
+    <div class="hint" style="text-align:center;margin-top:16px">
+      默认账号 <code class="inl">admin</code> / <code class="inl">admin888</code>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 主体 ============ -->
+<div class="wrap" id="appView" style="display:none">
+  <div class="side-mask"></div>
+  <aside class="side">
+    <div class="logo"><i>C</i><span>释然团队</span></div>
+    <nav id="nav"></nav>
+    <div class="foot" id="sideFoot">v1.0</div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <button class="burger" aria-label="菜单"><span></span><span></span><span></span></button>
+      <h1 id="pageTitle">概览</h1>
+      <div class="u">
+        <span class="uname" id="whoami">-</span>
+        <button class="btn ghost sm" id="btnLogout">退出</button>
+      </div>
+    </header>
+    <div class="body" id="pageBody"></div>
+  </div>
+</div>
+
+<script>
+/* ==== common.js 内联（避免外部加载失败） ==== */
+/* 公共 JS —— 请求封装 / 提示 / 工具 / 手机菜单 */
+const API = '';
+
+function toast(msg, type = '') {
+  let el = document.getElementById('toast');
+  if (!el) { el = document.createElement('div'); el.id = 'toast'; document.body.appendChild(el); }
+  el.className = 'on ' + type;
+  el.textContent = msg;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.className = type; el.style.opacity = 0; }, 2800);
+}
+
+function tokenGet(k) { return localStorage.getItem(k); }
+function tokenSet(k, v) { localStorage.setItem(k, v); }
+function tokenDel(k) { localStorage.removeItem(k); }
+
+async function req(url, opt = {}, tokenKey = 'adm_token') {
+  const headers = { 'Content-Type': 'application/json', ...(opt.headers || {}) };
+  const t = tokenGet(tokenKey);
+  if (t) headers.Authorization = 'Bearer ' + t;
+  let res;
+  try {
+    res = await fetch(API + url, {
+      method: opt.method || (opt.body ? 'POST' : 'GET'),
+      headers,
+      body: opt.body ? JSON.stringify(opt.body) : undefined,
+    });
+  } catch (e) {
+    toast('网络错误，请检查服务是否在运行', 'err');
+    throw e;
+  }
+  if (res.status === 401) {
+    tokenDel(tokenKey);
+    toast('登录已失效，请重新登录', 'err');
+    setTimeout(() => { location.href = tokenKey === 'adm_token' ? 'admin.html' : 'agent.html'; }, 900);
+    throw new Error('未登录');
+  }
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('json')) return await res.text();
+  const j = await res.json();
+  if (opt.raw) return j;
+  if (j.code !== 0) { toast(j.msg || '操作失败', 'err'); throw new Error(j.msg || 'failed'); }
+  return j;
+}
+
+function $(s, r = document) { return r.querySelector(s); }
+function $$(s, r = document) { return Array.from(r.querySelectorAll(s)); }
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function fmtTime(ms) {
+  if (!ms) return '-';
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function statusTag(st) {
+  const m = {
+    unused: ['未使用', 'wait'], used: ['已使用', 'ok'],
+    expired: ['已过期', 'off'], disabled: ['已封禁', 'err'],
+    pending: ['待审核', 'warn'], paid: ['已打款', 'ok'], rejected: ['已驳回', 'err'],
+  };
+  const [t, c] = m[st] || [st, 'off'];
+  return `<span class="tag ${c}">${t}</span>`;
+}
+
+function copy(text) {
+  const done = () => toast('已复制到剪贴板', 'ok');
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(done).catch(() => fallback());
+  } else fallback();
+  function fallback() {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); }
+    catch (e) { toast('复制失败，请长按手动选择', 'err'); }
+    document.body.removeChild(ta);
+  }
+}
+
+function download(filename, content, type = 'text/plain;charset=utf-8') {
+  const blob = new Blob(['\ufeff' + content], { type });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 3000);
+}
+
+/* 手机侧边栏 */
+function initMobileNav() {
+  const side = $('.side'), mask = $('.side-mask'), bg = $('.burger');
+  if (!side || !bg) return;
+  const close = () => { side.classList.remove('open'); mask && mask.classList.remove('on'); };
+  bg.onclick = () => { side.classList.toggle('open'); mask && mask.classList.toggle('on'); };
+  mask && (mask.onclick = close);
+  $A('.side nav a').forEach(a => a.addEventListener('click', close));
+}
+
+function sideNav(items, active) {
+  return items.map(([id, icon, name]) => `
+    <a href="#${id}" data-tab="${id}" class="${id === active ? 'on' : ''}">
+      <span>${icon}</span><em style="font-style:normal">${name}</em>
+    </a>`).join('');
+}
+
+function openModal(title, bodyHtml, footHtml) {
+  let m = document.getElementById('__modal');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = '__modal';
+    m.className = 'mask';
+    m.innerHTML = `<div class="modal">
+      <div class="mh"><h3></h3><button class="x">&times;</button></div>
+      <div class="mb"></div><div class="mf"></div></div>`;
+    document.body.appendChild(m);
+    m.querySelector('.x').onclick = closeModal;
+    m.onclick = e => { if (e.target === m) closeModal(); };
+  }
+  m.querySelector('.mh h3').textContent = title;
+  m.querySelector('.mb').innerHTML = bodyHtml;
+  m.querySelector('.mf').innerHTML = footHtml || '';
+  m.classList.add('on');
+  return m;
+}
+function closeModal() {
+  const m = document.getElementById('__modal');
+  if (m) m.classList.remove('on');
+}
+
+/* 记录当前页签，刷新后保持 */
+function tabRemember(key, def) {
+  const h = (location.hash || '').replace('#', '');
+  return h || sessionStorage.getItem(key) || def;
+}
+function tabSet(key, id) { sessionStorage.setItem(key, id); }
+
+</script>
+<script>
+/* =========================================================
+ *  全局
+ * ========================================================= */
+const NAV = [
+  ['dash',   '▤', '概览'],
+  ['apps',   '▣', '应用管理'],
+  ['cards',  '▦', '卡密管理'],
+  ['gen',    '＋', '卡密生成'],
+  ['gencredit', '◉', '额度卡生成'],
+  ['types',  '◈', '卡类型'],
+  ['users',  '☺', '用户额度'],
+  ['agents', '⚑', '代理商'],
+  ['withdraw','¥', '提现审核'],
+  ['logs',   '☰', '验证日志'],
+  ['apidoc', '⌗', '对接文档'],
+  ['setting','⚙', '系统设置'],
+];
+let TYPES = [];
+let APPS = [];
+
+/* 兜底：确保 $ / $$ / $Q / $A 四个选择器函数都可用 */
+window.$ = window.$ || ((s, r) => (r || document).querySelector(s));
+window.$$ = window.$$ || ((s, r) => Array.from((r || document).querySelectorAll(s)));
+const $Q = (s, r) => (r || document).querySelector(s);
+const $A = (s, r) => Array.from((r || document).querySelectorAll(s));
+let CUR = 'dash';
+
+/* =========================================================
+ *  登录
+ * ========================================================= */
+function bindLogin() {
+  const u = $('#lgUser'), p = $('#lgPwd'), b = $('#lgBtn');
+  if (!u || !p || !b) return;
+  u.addEventListener('keydown', e => { if (e.key === 'Enter') p.focus(); });
+  p.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  b.onclick = doLogin;
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bindLogin);
+} else {
+  bindLogin();
+}
+
+async function doLogin() {
+  const userEl = $('#lgUser'), pwdEl = $('#lgPwd');
+  // 容错：去掉所有空白（含全角空格、不间断空格），防止中文输入法带进来的空格
+  const rawUser = (userEl && userEl.value) || '';
+  const rawPwd = (pwdEl && pwdEl.value) || '';
+  const username = rawUser.replace(/[\s\u3000\u00A0]+/g, '').trim();
+  const password = rawPwd.trim();
+
+  if (!username || !password) {
+    // 明确指出缺哪一项，避免用户困惑
+    const miss = [];
+    if (!username) miss.push('账号');
+    if (!password) miss.push('密码');
+    return toast('请填写' + miss.join('和'), 'err');
+  }
+
+  const btn = $('#lgBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '登录中...'; }
+  try {
+    const j = await req('/api/admin/login', { body: { username, password } }, 'nokey');
+    tokenSet('adm_token', j.token);
+    tokenSet('adm_user', j.username);
+    await boot();
+  } catch (e) {
+    // 把失败原因显示出来，而不是静默吞掉
+    toast('登录失败：' + (e && e.message ? e.message : '未知错误'), 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '登 录'; }
+  }
+}
+
+$('#btnLogout').onclick = () => {
+  tokenDel('adm_token'); tokenDel('adm_user');
+  location.reload();
+};
+
+/* =========================================================
+ *  启动
+ * ========================================================= */
+async function boot() {
+  if (!tokenGet('adm_token')) return;
+  try {
+    await req('/api/admin/me');
+  } catch (e) { return; }
+  $('#loginView').style.display = 'none';
+  $('#appView').style.display = 'flex';
+  $('#whoami').textContent = tokenGet('adm_user') || 'admin';
+  $('#nav').innerHTML = sideNav(NAV, CUR);
+  $A('#nav a').forEach(a => a.onclick = e => {
+    e.preventDefault();
+    go(a.dataset.tab);
+  });
+  initMobileNav();
+  window.addEventListener('hashchange', () => {
+    const t = (location.hash || '').replace('#', '');
+    if (t && t !== CUR) go(t, true);
+  });
+  await loadTypes();
+  go(tabRemember('adm_tab', 'dash'), true);
+}
+
+function go(tab, silent) {
+  if (!NAV.find(n => n[0] === tab)) tab = 'dash';
+  CUR = tab;
+  tabSet('adm_tab', tab);
+  $('#pageTitle').textContent = (NAV.find(n => n[0] === tab) || [])[2] || '';
+  $A('#nav a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
+  if (!silent) location.hash = tab;
+  window.scrollTo(0, 0);
+  const el = $('#pageBody');
+  el.innerHTML = '<div class="empty">加载中...</div>';
+  const fn = PAGES[tab];
+  if (fn) fn(el).catch(e => { el.innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>'; });
+}
+
+async function loadTypes() {
+  const j = await req('/api/admin/types');
+  TYPES = j.list;
+}
+
+/* =========================================================
+ *  页面集合
+ * ========================================================= */
+const PAGES = {};
+
+/* ---------- 概览 ---------- */
+PAGES.dash = async (el) => {
+  const d = await req('/api/admin/stats');
+  const maxV = Math.max(1, ...d.trend.map(t => t.total));
+  const bars = d.trend.map(t => {
+    const h = Math.round(t.total / maxV * 90) + 4;
+    const fh = Math.round(t.fail / maxV * 90);
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px">
+      <div style="width:100%;display:flex;flex-direction:column;justify-content:flex-end;height:94px;position:relative">
+        <div style="height:${h}px;background:linear-gradient(180deg,#5b8cff,#2f6bff);border-radius:5px 5px 0 0;position:relative">
+          ${fh ? `<div style="position:absolute;bottom:0;left:0;right:0;height:${fh}px;background:#f04438;border-radius:0 0 0 0"></div>` : ''}
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--dim)">${t.date}</div>
+      <div style="font-size:11px;color:var(--text);font-weight:600">${t.total}</div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+  <div class="stats">
+    <div class="st b"><div class="lb">卡密总数</div><div class="vl">${d.cards_total}</div>
+      <div class="sub">未使用 ${d.cards_unused} · 已用 ${d.cards_used}</div></div>
+    <div class="st g"><div class="lb">VIP 生效中</div><div class="vl">${d.vip_active}</div>
+      <div class="sub">总用户 ${d.users_total}</div></div>
+    <div class="st o"><div class="lb">今日验证</div><div class="vl">${d.verify_today}</div>
+      <div class="sub">失败 ${d.verify_fail_today} 次</div></div>
+    <div class="st p"><div class="lb">累计充值额度</div><div class="vl">${d.credit_total}</div>
+      <div class="sub">已消耗 ${d.credit_used}</div></div>
+    <div class="st"><div class="lb">代理商</div><div class="vl">${d.agents_total}</div>
+      <div class="sub">冻结 ${d.agents_frozen} 个</div></div>
+    <div class="st"><div class="lb">代理余额合计</div><div class="vl" style="font-size:21px">¥${d.agent_balance_total}</div>
+      <div class="sub">待审提现 ¥${d.withdraw_pending}</div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="hd"><h2>近 7 天验证趋势</h2>
+      <span class="hint" style="margin:0">蓝色=总请求，红色=失败</span></div>
+    <div class="bd">
+      <div style="display:flex;gap:8px;align-items:flex-end;padding:6px 0">${bars}</div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card"><div class="hd"><h2>系统状态</h2></div><div class="bd">
+      <table class="tb">
+        <tr><td style="color:var(--dim)">服务器时间</td><td style="text-align:right">${esc(d.server_time)}</td></tr>
+        <tr><td style="color:var(--dim)">已运行</td><td style="text-align:right">${d.uptime_min} 分钟</td></tr>
+        <tr><td style="color:var(--dim)">数据存储</td><td style="text-align:right">本地 SQLite</td></tr>
+        <tr><td style="color:var(--dim)">卡密状态分布</td><td style="text-align:right">
+          未用 ${d.cards_unused} / 已用 ${d.cards_used} / 过期 ${d.cards_expired} / 封禁 ${d.cards_disabled}
+        </td></tr>
+      </table>
+    </div></div>
+    <div class="card"><div class="hd"><h2>快捷操作</h2></div><div class="bd" style="display:flex;flex-direction:column;gap:10px">
+      <button class="btn" onclick="go('gen')">批量生成卡密</button>
+      <button class="btn ghost" onclick="go('agents')">管理代理商</button>
+      <button class="btn ghost" onclick="go('apidoc')">查看对接文档</button>
+      <button class="btn ghost" onclick="location.href='/api/admin/backup?token='+tokenGet('adm_token')">下载数据库备份</button>
+    </div></div>
+  </div>`;
+};
+
+/* ---------- 应用管理（多应用：每个软件独立卡密池与密钥） ---------- */
+PAGES.apps = async (el) => {
+  const j = await req('/api/admin/apps');
+  APPS = j.list;
+
+  el.innerHTML = `
+  <div class="card" style="margin-bottom:14px">
+    <div class="hd"><h2>应用列表</h2>
+      <button class="btn sm" id="appAdd">＋ 新增应用</button></div>
+    <div class="tbwrap" id="appTb"></div>
+  </div>
+  <div class="card"><div class="bd">
+    <div class="hint" style="margin:0;line-height:2">
+      <b>什么是多应用？</b><br>
+      如果你有多个软件/工具，可以在这里为每个软件建一个「应用」。<br>
+      · 每个应用有<b>独立的卡密池</b>，A 软件的卡不能用在 B 软件上<br>
+      · 每个应用有<b>独立的通信密钥</b>，一个泄露不影响其他<br>
+      · 每个应用可以单独设置<b>版本号、下载地址、公告</b><br>
+      · 客户端对接时需要传 <code class="inl">app_id</code> 来指定自己属于哪个应用
+    </div>
+  </div></div>`;
+
+  $('#appAdd').onclick = () => appEdit(null);
+  renderApps();
+};
+
+function renderApps() {
+  const box = $('#appTb');
+  if (!APPS.length) { box.innerHTML = '<div class="empty">还没有应用</div>'; return; }
+  box.innerHTML = `<table class="tb tb-mobile">
+    <thead><tr>
+      <th>应用标识</th><th>名称</th><th>卡密</th><th>卡类型</th>
+      <th>版本</th><th>状态</th><th>操作</th>
+    </tr></thead><tbody>
+    ${APPS.map(a => `<tr>
+      <td data-l="应用标识"><span class="mono">${esc(a.app_id)}</span></td>
+      <td data-l="名称"><b>${esc(a.name)}</b></td>
+      <td data-l="卡密">共 ${a.card_total} · 未用 ${a.card_unused}</td>
+      <td data-l="卡类型">${a.type_total} 种</td>
+      <td data-l="版本">v${esc(a.version || '1.0.0')}</td>
+      <td data-l="状态">${a.enabled ? '<span class="tag ok">启用</span>' : '<span class="tag off">停用</span>'}</td>
+      <td data-l="操作" style="white-space:nowrap">
+        <button class="btn ghost sm" onclick="appEdit('${esc(a.app_id)}')">编辑</button>
+        <button class="btn ghost sm" onclick="appSecret('${esc(a.app_id)}')">密钥</button>
+        <button class="btn ghost sm" onclick="go('gen')">生成卡</button>
+        ${a.app_id === 'default' ? '' : `<button class="btn ghost sm" onclick="appDel('${esc(a.app_id)}')">删除</button>`}
+      </td></tr>`).join('')}
+    </tbody></table>`;
+}
+
+function appEdit(appId) {
+  const a = appId ? APPS.find(x => x.app_id === appId) : { app_id: '', name: '', version: '1.0.0', download_url: '', notice: '', enabled: 1, remark: '' };
+  openModal(appId ? '编辑应用 · ' + a.name : '新增应用', `
+    <div class="f"><label>应用标识（客户端对接用，创建后不可改）</label>
+      <input id="faId" value="${esc(a.app_id)}" ${appId ? 'disabled' : ''} placeholder="如 mytool、game1"></div>
+    <div class="f"><label>应用名称</label>
+      <input id="faName" value="${esc(a.name)}" placeholder="如 XX助手"></div>
+    <div class="f"><label>客户端版本号</label>
+      <input id="faVer" value="${esc(a.version || '1.0.0')}" placeholder="1.0.0"></div>
+    <div class="f"><label>客户端下载地址</label>
+      <input id="faUrl" value="${esc(a.download_url || '')}" placeholder="https://..."></div>
+    <div class="f"><label>应用公告（客户端可拉取显示）</label>
+      <textarea id="faNotice" rows="3">${esc(a.notice || '')}</textarea></div>
+    ${appId ? `<div class="f"><label>状态</label><select id="faEnabled">
+        <option value="1" ${a.enabled ? 'selected' : ''}>启用</option>
+        <option value="0" ${!a.enabled ? 'selected' : ''}>停用</option></select></div>` : ''}
+    <div class="f"><label>备注</label><input id="faRemark" value="${esc(a.remark || '')}"></div>
+  `, `<button class="btn ghost" onclick="closeModal()">取消</button>
+      <button class="btn" id="faSave">${appId ? '保存' : '创建'}</button>`);
+
+  $('#faSave').onclick = async () => {
+    try {
+      if (appId) {
+        await req('/api/admin/apps/' + appId, { method: 'PUT', body: {
+          name: $('#faName').value.trim(),
+          version: $('#faVer').value.trim(),
+          download_url: $('#faUrl').value.trim(),
+          notice: $('#faNotice').value,
+          remark: $('#faRemark').value.trim(),
+          enabled: $('#faEnabled') ? parseInt($('#faEnabled').value, 10) : 1,
+        }});
+      } else {
+        const r = await req('/api/admin/apps', { body: {
+          app_id: $('#faId').value.trim(),
+          name: $('#faName').value.trim(),
+          version: $('#faVer').value.trim(),
+          download_url: $('#faUrl').value.trim(),
+          notice: $('#faNotice').value,
+          remark: $('#faRemark').value.trim(),
+        }});
+        alert('应用创建成功！\\n\\n应用标识：' + r.app_id
+          + '\\n通信密钥：' + r.secret
+          + '\\n\\n请把这个应用标识和密钥填到对应软件的客户端代码里。');
+      }
+      toast('已保存', 'ok'); closeModal(); go('apps');
+    } catch (e) {}
+  };
+}
+
+async function appSecret(appId) {
+  const j = await req('/api/admin/apps');
+  const a = j.list.find(x => x.app_id === appId);
+  if (!a) return;
+  openModal('应用密钥 · ' + a.name, `
+    <div class="f"><label>应用标识 app_id</label>
+      <input value="${esc(a.app_id)}" readonly></div>
+    <div class="f"><label>通信密钥 secret</label>
+      <input value="${esc(a.secret)}" readonly style="font-family:ui-monospace,monospace;font-size:12px"></div>
+    <div class="hint">客户端签名要用这个密钥。重置后该应用的所有旧客户端会立即失效。</div>
+  `, `<button class="btn ghost sm" onclick="copy('${esc(a.app_id)}')">复制标识</button>
+      <button class="btn sm" onclick="copy('${esc(a.secret)}')">复制密钥</button>
+      <button class="btn danger sm" id="asReset">重置密钥</button>`);
+
+  $('#asReset').onclick = async () => {
+    if (!confirm('重置后该应用所有客户端都会验证失败，需要更新客户端。确定？')) return;
+    const r = await req(`/api/admin/apps/${appId}/secret`, { method: 'POST' });
+    alert('新密钥：\\n' + r.secret);
+    closeModal(); go('apps');
+  };
+}
+
+async function appDel(appId) {
+  if (!confirm('删除应用会同时删除它的所有卡类型，确定？')) return;
+  await req('/api/admin/apps/' + appId, { method: 'DELETE' });
+  toast('已删除', 'ok'); go('apps');
+}
+
+/* ---------- 卡密管理 ---------- */
+let cardQ = { page: 1, size: 20, kw: '', status: '', type: '', batch: '', app_id: '', unit: '' };
+PAGES.cards = async (el) => {
+  const aj = await req('/api/admin/apps');
+  APPS = aj.list;
+  const tj = await req('/api/admin/types');
+  TYPES = tj.list;
+
+  const optTypes = TYPES.map(t =>
+    `<option value="${esc(t.code)}">${esc(t.name)}</option>`).join('');
+
+  el.innerHTML = `
+  <div class="card" style="margin-bottom:14px">
+    <div class="bd" style="padding:12px 18px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div style="font-size:13px;color:var(--dim)">
+        这里管理<b>时长卡</b>（天/周/月）等所有卡密。
+        额度卡有独立页面，生成和查看更方便。
+      </div>
+      <button class="btn ok sm" onclick="go('gencredit')">前往额度卡页面 →</button>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="bd">
+      <div class="row">
+        <div class="f grow"><label>搜索（卡密/机器码/备注）</label>
+          <input id="qKw" value="${esc(cardQ.kw)}" placeholder="输入关键字"></div>
+        <div class="f"><label>应用</label>
+          <select id="qApp">
+            <option value="">全部应用</option>
+            ${APPS.map(a => `<option value="${esc(a.app_id)}">${esc(a.name)}</option>`).join('')}
+          </select></div>
+        <div class="f"><label>卡密大类</label>
+          <select id="qUnit">
+            <option value="">全部时长卡</option>
+            <option value="hour">小时卡</option>
+            <option value="day">天卡 / 周卡 / 月卡</option>
+          </select></div>
+        <div class="f"><label>状态</label>
+          <select id="qStatus">
+            <option value="">全部</option>
+            <option value="unused">未使用</option>
+            <option value="used">已使用</option>
+            <option value="expired">已过期</option>
+            <option value="disabled">已封禁</option>
+          </select></div>
+        <div class="f"><label>具体类型</label><select id="qType"><option value="">全部</option>${optTypes}</select></div>
+        <div class="f"><label>批次</label><input id="qBatch" value="${esc(cardQ.batch)}" placeholder="批次号"></div>
+        <div class="f" style="flex:0 0 auto"><button class="btn" id="btnSearch">查询</button></div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="hd"><h2>卡密列表 <span id="cardTotal" class="hint" style="margin:0"></span></h2>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn ok sm" id="btnExport">导出当前结果</button>
+        <button class="btn ghost sm" id="btnBatchDisable">按批次封禁</button>
+        <button class="btn sm" onclick="go('gen')">生成卡密</button>
+      </div>
+    </div>
+
+    <!-- 批量操作条（勾选后出现） -->
+    <div id="cardSelBar" style="display:none;padding:10px 18px;background:#eef4ff;
+      border-bottom:1px solid #d6e2ff;align-items:center;gap:10px;flex-wrap:wrap">
+      <span style="font-size:13px;color:#1d51d8">
+        已选 <b id="cardSelCount">0</b> 张
+      </span>
+      <button class="btn sm" id="cardSelCopy">复制所选卡密</button>
+      <button class="btn ok sm" id="cardSelDl">下载所选</button>
+      <button class="btn danger sm" id="cardSelDisable">批量封禁</button>
+      <button class="btn ghost sm" id="cardSelClear">取消选择</button>
+    </div>
+
+    <div class="tbwrap" id="cardTb"><div class="empty">加载中...</div></div>
+    <div class="pg" id="cardPg"></div>
+  </div>`;
+
+  $('#qStatus').value = cardQ.status;
+  $('#qType').value = cardQ.type;
+  $('#qApp').value = cardQ.app_id;
+  $('#qUnit').value = cardQ.unit;
+  $('#qApp').onchange = () => { cardQ.app_id = $('#qApp').value; cardQ.page = 1; loadCards(); };
+  $('#qUnit').onchange = () => { cardQ.unit = $('#qUnit').value; cardQ.page = 1; loadCards(); };
+  $('#btnSearch').onclick = () => {
+    cardQ.kw = $('#qKw').value.trim();
+    cardQ.status = $('#qStatus').value;
+    cardQ.type = $('#qType').value;
+    cardQ.batch = $('#qBatch').value.trim();
+    cardQ.page = 1;
+    loadCards();
+  };
+  $('#qKw').onkeydown = e => e.key === 'Enter' && $('#btnSearch').click();
+  $('#btnExport').onclick = () => {
+    const p = new URLSearchParams({
+      batch: cardQ.batch, status: cardQ.status, type: cardQ.type,
+      app_id: cardQ.app_id, unit: cardQ.unit,
+    });
+    const t = tokenGet('adm_token');
+    fetch('/api/admin/cards/export?' + p, { headers: { Authorization: 'Bearer ' + t } })
+      .then(r => r.text()).then(txt => download('卡密导出_' + Date.now() + '.txt', txt))
+      .catch(() => toast('导出失败', 'err'));
+  };
+  $('#btnBatchDisable').onclick = () => {
+    const b = prompt('输入要封禁的批次号（该批次所有未使用卡密将被封禁）：', cardQ.batch || '');
+    if (!b) return;
+    req('/api/admin/cards/disable-batch', { body: { batch_no: b } })
+      .then(j => { toast(j.msg, 'ok'); loadCards(); });
+  };
+  loadCards();
+};
+
+async function loadCards() {
+  const p = new URLSearchParams({
+    page: cardQ.page, size: cardQ.size, kw: cardQ.kw,
+    status: cardQ.status, type: cardQ.type, batch: cardQ.batch,
+    app_id: cardQ.app_id, unit: cardQ.unit,
+    exclude_unit: 'credit',   // 额度卡只在「额度卡生成」页显示
+  });
+  const d = await req('/api/admin/cards?' + p);
+  $('#cardTotal').textContent = `共 ${d.total} 条`;
+  const box = $('#cardTb');
+  if (!d.list.length) {
+    box.innerHTML = '<div class="empty">暂无时长卡密，点右上角「生成卡密」创建</div>';
+    $('#cardPg').innerHTML = '';
+    return;
+  }
+
+  box.innerHTML = `<table class="tb tb-mobile">
+    <thead><tr>
+      <th style="width:38px"><input type="checkbox" id="cardCheckAll"
+        style="width:16px;height:16px;cursor:pointer" title="全选本页"></th>
+      <th>卡密</th><th>应用</th><th>类型</th><th>状态</th><th>到期/额度</th>
+      <th>绑定设备</th><th>来源</th><th>创建时间</th><th>操作</th>
+    </tr></thead><tbody>
+    ${d.list.map(c => {
+      const isHour = c.unit === 'hour';
+      const val = isHour
+        ? (c.expire_at
+            ? `剩 ${Math.max(0, Math.ceil((c.expire_at - Date.now()) / 3600000))} 小时`
+            : '未激活')
+        : c.unit === 'day'
+          ? (c.expire_at
+              ? `剩 ${Math.max(0, Math.ceil((c.expire_at - Date.now()) / 86400000))} 天`
+              : '未激活')
+          : `${c.value} 额度`;
+      return `<tr>
+        <td data-l="选择"><input type="checkbox" class="card-chk"
+          value="${esc(c.card_key)}" style="width:16px;height:16px;cursor:pointer"></td>
+        <td data-l="卡密"><span class="mono">${esc(c.card_key)}</span>
+          <button class="btn ghost sm" style="padding:1px 7px;margin-left:4px" onclick="copy('${esc(c.card_key)}')">复制</button></td>
+        <td data-l="应用"><span class="tag p">${esc(c.app_name || c.app_id)}</span></td>
+        <td data-l="类型">${esc(c.type_name)}</td>
+        <td data-l="状态">${statusTag(c.status)}</td>
+        <td data-l="到期/额度">${val}</td>
+        <td data-l="设备" class="mono" style="font-size:11.5px">${c.owner_device ? esc(c.owner_device.slice(0, 18)) : '-'}</td>
+        <td data-l="来源">${c.agent_name ? esc(c.agent_name) : '管理员'}</td>
+        <td data-l="创建">${fmtTime(c.created_at)}</td>
+        <td data-l="操作" style="white-space:nowrap">
+          <button class="btn ghost sm" onclick="cardAct(${c.id},'disable')">${c.status === 'disabled' ? '解封' : '封禁'}</button>
+          <button class="btn ghost sm" onclick="cardAct(${c.id},'unbind')">解绑</button>
+          <button class="btn ghost sm" onclick="cardAct(${c.id},'extend')">加时</button>
+          <button class="btn ghost sm" onclick="cardAct(${c.id},'reset')">重置</button>
+        </td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>`;
+
+  bindCardCheckbox();
+
+  const pages = Math.ceil(d.total / d.size);
+  $('#cardPg').innerHTML = `
+    <span>第 ${d.page} / ${pages || 1} 页</span>
+    <button ${d.page <= 1 ? 'disabled' : ''} onclick="cardPage(${d.page - 1})">上一页</button>
+    <button ${d.page >= pages ? 'disabled' : ''} onclick="cardPage(${d.page + 1})">下一页</button>`;
+}
+
+/* 勾选逻辑（卡密列表） */
+function bindCardCheckbox() {
+  const all = $('#cardCheckAll');
+  const box = $('#cardSelBar');
+
+  function refresh() {
+    const checked = $A('.card-chk:checked');
+    const n = checked.length;
+    if (box) {
+      box.style.display = n > 0 ? 'flex' : 'none';
+      $('#cardSelCount').textContent = n;
+    }
+    if (all) {
+      const total = $A('.card-chk').length;
+      all.checked = n > 0 && n === total;
+      all.indeterminate = n > 0 && n < total;
+    }
+  }
+
+  if (all) all.onchange = () => {
+    $A('.card-chk').forEach(c => { c.checked = all.checked; });
+    refresh();
+  };
+  $A('.card-chk').forEach(c => c.onchange = refresh);
+
+  const getSel = () => $A('.card-chk:checked').map(c => c.value);
+
+  const copyBtn = $('#cardSelCopy');
+  if (copyBtn) copyBtn.onclick = () => {
+    const sel = getSel();
+    if (!sel.length) return toast('请先勾选卡密', 'err');
+    copy(sel.join('\n'));
+  };
+
+  const dlBtn = $('#cardSelDl');
+  if (dlBtn) dlBtn.onclick = () => {
+    const sel = getSel();
+    if (!sel.length) return toast('请先勾选卡密', 'err');
+    download(`选中卡密_${sel.length}张_${Date.now()}.txt`, sel.join('\r\n'));
+  };
+
+  const disBtn = $('#cardSelDisable');
+  if (disBtn) disBtn.onclick = async () => {
+    const sel = getSel();
+    if (!sel.length) return toast('请先勾选卡密', 'err');
+    if (!confirm(`确定封禁选中的 ${sel.length} 张卡？封禁后用户无法使用。`)) return;
+    let ok = 0;
+    for (const k of sel) {
+      try {
+        const row = $A('.card-chk').find(c => c.value === k);
+        const tr = row && row.closest('tr');
+        const btn = tr && tr.querySelector('button[onclick*="disable"]');
+        const m = btn && btn.getAttribute('onclick').match(/cardAct\((\d+)/);
+        if (m) {
+          await req('/api/admin/cards/' + m[1] + '/disable', { method: 'POST' });
+          ok++;
+        }
+      } catch (e) {}
+    }
+    toast(`已封禁 ${ok} 张`, 'ok');
+    loadCards();
+  };
+
+  const clrBtn = $('#cardSelClear');
+  if (clrBtn) clrBtn.onclick = () => {
+    $A('.card-chk').forEach(c => { c.checked = false; });
+    refresh();
+  };
+}
+
+function cardPage(p) { cardQ.page = p; loadCards(); }
+
+async function cardAct(id, act) {
+  try {
+    if (act === 'extend') {
+      const d = prompt('延长天数（可输负数缩短）：', '30');
+      if (!d) return;
+      const j = await req(`/api/admin/cards/${id}/extend`, { body: { days: parseInt(d, 10) } });
+      toast(j.msg, 'ok');
+    } else if (act === 'reset') {
+      if (!confirm('重置后该卡恢复为未使用状态，已绑设备解绑，确定？')) return;
+      const j = await req(`/api/admin/cards/${id}/reset`, { method: 'POST' });
+      toast(j.msg, 'ok');
+    } else {
+      const j = await req(`/api/admin/cards/${id}/${act}`, { method: 'POST' });
+      toast(j.msg, 'ok');
+    }
+    loadCards();
+  } catch (e) {}
+}
+
+/* ---------- 批量生成 ---------- */
+PAGES.gen = async (el) => {
+  const j = await req('/api/admin/apps');
+  APPS = j.list;
+
+  el.innerHTML = `
+  <div class="grid2">
+    <div class="card"><div class="hd"><h2>批量生成时长卡</h2>
+      <span class="hint" style="margin:0">小时卡 / 天卡 / 周卡 / 月卡</span></div>
+      <div class="bd" style="display:flex;flex-direction:column;gap:14px">
+        <div class="f"><label>所属应用</label>
+          <select id="gApp">${APPS.map(a => `<option value="${esc(a.app_id)}">${esc(a.name)}</option>`).join('')}</select>
+          <div class="hint">不同应用的卡密互不通用</div>
+        </div>
+        <div class="f"><label>选择卡类型</label>
+          <select id="gType"></select>
+        </div>
+        <div class="f"><label>生成数量（1-10000）</label>
+          <input id="gCount" type="number" value="1" min="1" max="10000">
+          <div class="hint">默认 1 张，需要批量就改这里</div>
+        </div>
+        <div class="f"><label>每张可绑定设备数</label><input id="gDev" type="number" value="1" min="1" max="10">
+          <div class="hint">1 = 卡密与其机器码一对一绑定，换机需后台解绑</div></div>
+        <div class="f"><label>备注（可选）</label><input id="gRemark" placeholder="如：淘宝渠道200张"></div>
+        <button class="btn" id="gBtn">立即生成</button>
+      </div>
+    </div>
+    <div class="card"><div class="hd"><h2>生成结果</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn ghost sm" id="gCopy">复制全部</button>
+        <button class="btn ok sm" id="gDl">下载 TXT</button>
+      </div></div>
+      <div class="bd"><textarea id="gOut" rows="18" style="font-family:ui-monospace,Consolas,monospace;font-size:12.5px"
+        placeholder="生成后卡密会显示在这里"></textarea>
+        <div class="hint" id="gInfo"></div>
+      </div>
+    </div>
+  </div>`;
+
+  // 只加载时长卡（hour / day），额度卡在「额度卡」页面生成
+  async function refreshTypes() {
+    const appId = $('#gApp').value;
+    const r = await req('/api/admin/types?app_id=' + encodeURIComponent(appId));
+    const hourTypes = r.list.filter(t => t.unit === 'hour');
+    const dayTypes = r.list.filter(t => t.unit === 'day');
+
+    let html = '';
+    if (hourTypes.length) {
+      html += '<optgroup label="── 小时卡 ──">' +
+        hourTypes.map(t => `<option value="${esc(t.code)}">${esc(t.name)} · ${t.value} 小时</option>`).join('') +
+        '</optgroup>';
+    }
+    if (dayTypes.length) {
+      html += '<optgroup label="── 天卡 / 周卡 / 月卡 ──">' +
+        dayTypes.map(t => `<option value="${esc(t.code)}">${esc(t.name)} · ${t.value} 天</option>`).join('') +
+        '</optgroup>';
+    }
+    if (!html) html = '<option value="">（该应用还没有时长卡类型）</option>';
+    $('#gType').innerHTML = html;
+  }
+
+  $('#gApp').onchange = refreshTypes;
+  await refreshTypes();
+
+  $('#gBtn').onclick = async () => {
+    const app_id = $('#gApp').value;
+    const type_code = $('#gType').value;
+    const count = parseInt($('#gCount').value, 10) || 1;
+    const max_devices = parseInt($('#gDev').value, 10) || 1;
+    const remark = $('#gRemark').value.trim();
+    if (!type_code) return toast('请选择卡类型', 'err');
+
+    $('#gBtn').disabled = true; $('#gBtn').textContent = '生成中...';
+    try {
+      const r = await req('/api/admin/cards/generate', {
+        body: { app_id, type_code, count, max_devices, remark },
+      });
+      $('#gOut').value = r.cards.join('\n');
+      const u = r.unit === 'hour' ? '小时' : '天';
+      $('#gInfo').textContent = `批次 ${r.batch} · 共 ${r.count} 张 · 每张 ${r.face_value} ${u}`;
+      toast(`成功生成 ${r.count} 张`, 'ok');
+    } catch (e) {} finally {
+      $('#gBtn').disabled = false; $('#gBtn').textContent = '立即生成';
+    }
+  };
+  $('#gCopy').onclick = () => $('#gOut').value && copy($('#gOut').value);
+  $('#gDl').onclick = () => $('#gOut').value
+    ? download('卡密_' + Date.now() + '.txt', $('#gOut').value)
+    : toast('还没有生成的卡密', 'err');
+};
+
+
+/* ---------- 额度卡（生成 + 列表，与通用卡密管理分离） ---------- */
+let creQ = { page: 1, status: '', app_id: '', kw: '' };
+let CREDIT_APPS = [];
+
+PAGES.gencredit = async (el) => {
+  const aj = await req('/api/admin/apps');
+  APPS = aj.list;
+  CREDIT_APPS = aj.list;
+
+  el.innerHTML = `
+  <!-- ===== 上半：生成 ===== -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="hd"><h2>生成额度卡</h2>
+      <span class="hint" style="margin:0">选类型 → 填额度 → 填数量，一次生成一批</span></div>
+    <div class="bd">
+      <div class="row">
+        <div class="f"><label>所属应用</label>
+          <select id="cApp">${APPS.map(a => `<option value="${esc(a.app_id)}">${esc(a.name)}</option>`).join('')}</select>
+        </div>
+        <div class="f"><label>卡类型</label>
+          <select id="cType"></select>
+        </div>
+        <div class="f" style="max-width:150px"><label>每张面值（<span id="cUnitLabel">额度</span>）</label>
+          <input id="cValue" type="number" min="1" step="1" value="10"
+            style="font-size:17px;font-weight:600;text-align:center">
+        </div>
+        <div class="f" style="max-width:120px"><label>数量</label>
+          <input id="cCount" type="number" value="1" min="1" max="10000">
+        </div>
+        <div class="f" style="max-width:100px"><label>可绑设备</label>
+          <input id="cDev" type="number" value="1" min="1" max="10">
+        </div>
+        <div class="f grow"><label>备注（可选）</label>
+          <input id="cRemark" placeholder="如：代理商张三拿货">
+        </div>
+        <div class="f" style="flex:0 0 auto">
+          <button class="btn ok" id="cBtn" style="padding:9px 22px">立即生成</button>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
+        <span style="font-size:12.5px;color:var(--dim)">快捷面值：</span>
+        ${[10, 50, 100, 200, 500, 1000, 2000, 5000].map(v =>
+          `<button class="btn ghost sm" onclick="$('#cValue').value=${v};updateTotal()">${v}</button>`).join('')}
+        <span style="margin-left:12px;font-size:13px">
+          本批：<b id="cTotal" style="color:var(--brand);font-size:16px">10</b>
+          <span id="cTotalUnit" style="color:var(--dim)">额度 × 10 张</span>
+        </span>
+      </div>
+
+      <div id="cOutWrap" style="display:none;margin-top:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <b style="font-size:13.5px">生成结果 <span class="hint" id="cInfo" style="margin:0"></span></b>
+          <div style="display:flex;gap:8px">
+            <button class="btn ghost sm" id="cCopy">复制全部</button>
+            <button class="btn ok sm" id="cDl">下载 TXT</button>
+          </div>
+        </div>
+        <textarea id="cOut" rows="8" style="font-family:ui-monospace,Consolas,monospace;font-size:12.5px"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 下半：列表 ===== -->
+  <div class="card">
+    <div class="hd"><h2>额度卡列表 <span id="creTotal" class="hint" style="margin:0"></span></h2>
+      <div class="row" style="gap:8px;flex:0 0 auto">
+        <select id="creApp" style="width:auto">
+          <option value="">全部应用</option>
+          ${APPS.map(a => `<option value="${esc(a.app_id)}">${esc(a.name)}</option>`).join('')}
+        </select>
+        <select id="creStatus" style="width:auto">
+          <option value="">全部状态</option>
+          <option value="unused">未使用</option>
+          <option value="used">已使用</option>
+          <option value="disabled">已封禁</option>
+        </select>
+        <input id="creKw" placeholder="搜卡密" style="width:150px">
+        <button class="btn sm" id="creSearch">查询</button>
+      </div>
+    </div>
+    <!-- 批量操作条 -->
+    <div id="creSelBar" style="display:none;padding:10px 18px;background:#eef4ff;
+      border-bottom:1px solid #d6e2ff;align-items:center;gap:10px;flex-wrap:wrap">
+      <span style="font-size:13px;color:#1d51d8">已选 <b id="creSelCount">0</b> 张</span>
+      <button class="btn sm" id="creSelCopy">复制所选卡密</button>
+      <button class="btn ok sm" id="creSelDl">下载所选</button>
+      <button class="btn ghost sm" id="creSelClear">取消选择</button>
+    </div>
+
+    <div class="tbwrap" id="creTb"><div class="empty">加载中...</div></div>
+    <div class="pg" id="crePg"></div>
+  </div>`;
+
+  let CURRENT_UNIT = 'credit';
+  let TYPE_MAP = {};
+
+  /* ---------- 生成区逻辑 ---------- */
+  async function refreshTypes() {
+    const appId = $('#cApp').value;
+    const r = await req('/api/admin/types?app_id=' + encodeURIComponent(appId));
+    const list = r.list.filter(t => t.unit === 'credit');
+    TYPE_MAP = {};
+    list.forEach(t => { TYPE_MAP[t.code] = t; });
+
+    if (!list.length) {
+      $('#cType').innerHTML = '<option value="">（该应用没有额度卡，请先去「卡类型」创建）</option>';
+      $('#cBtn').disabled = true;
+      return;
+    }
+    $('#cBtn').disabled = false;
+    $('#cType').innerHTML = list.map(t =>
+      `<option value="${esc(t.code)}" data-unit="credit">${esc(t.name)}</option>`
+    ).join('');
+    onTypeChange();
+  }
+
+  function onTypeChange() {
+    const opt = $('#cType').selectedOptions[0];
+    if (!opt || !opt.value) return;
+    CURRENT_UNIT = opt.dataset.unit || 'credit';
+    $('#cUnitLabel').textContent = CURRENT_UNIT === 'credit' ? '额度' : '次数';
+    updateTotal();
+  }
+
+  window.updateTotal = function () {
+    const v = parseInt($('#cValue').value, 10) || 0;
+    const n = parseInt($('#cCount').value, 10) || 0;
+    const u = CURRENT_UNIT === 'credit' ? '额度' : '次';
+    $('#cTotal').textContent = v;
+    $('#cTotalUnit').textContent = `${u} × ${n} 张`;
+  };
+
+  $('#cApp').onchange = refreshTypes;
+  $('#cType').onchange = onTypeChange;
+  $('#cValue').oninput = () => updateTotal();
+  $('#cCount').oninput = () => updateTotal();
+  await refreshTypes();
+
+  $('#cBtn').onclick = async () => {
+    const app_id = $('#cApp').value;
+    const type_code = $('#cType').value;
+    const type_value = parseInt($('#cValue').value, 10);
+    const count = parseInt($('#cCount').value, 10) || 1;
+
+    if (!type_code) return toast('请先选择卡类型', 'err');
+    if (!type_value || type_value <= 0) return toast('请填写大于 0 的面值', 'err');
+
+    $('#cBtn').disabled = true;
+    $('#cBtn').textContent = '生成中...';
+    try {
+      const r = await req('/api/admin/cards/generate', {
+        body: {
+          app_id, type_code, type_value, count,
+          max_devices: parseInt($('#cDev').value, 10) || 1,
+          remark: $('#cRemark').value.trim(),
+        },
+      });
+      $('#cOutWrap').style.display = '';
+      $('#cOut').value = r.cards.join('\n');
+      const u = r.unit === 'credit' ? '额度' : '次';
+      $('#cInfo').textContent = `批次 ${r.batch} · ${r.count} 张 · 每张 ${r.face_value} ${u}`;
+      toast(r.msg || `成功生成 ${r.count} 张`, 'ok');
+      loadCreditCards();
+    } catch (e) {
+      toast(e.message || '生成失败', 'err');
+    } finally {
+      $('#cBtn').disabled = false;
+      $('#cBtn').textContent = '立即生成';
+    }
+  };
+
+  $('#cCopy').onclick = () => $('#cOut').value && copy($('#cOut').value);
+  $('#cDl').onclick = () => {
+    if (!$('#cOut').value) return toast('还没有生成卡密', 'err');
+    download(`额度卡_${$('#cValue').value}额度_${Date.now()}.txt`, $('#cOut').value);
+  };
+
+  /* ---------- 列表区逻辑 ---------- */
+  $('#creStatus').value = creQ.status;
+  $('#creApp').value = creQ.app_id;
+  $('#creKw').value = creQ.kw;
+  $('#creSearch').onclick = () => {
+    creQ.app_id = $('#creApp').value;
+    creQ.status = $('#creStatus').value;
+    creQ.kw = $('#creKw').value.trim();
+    creQ.page = 1;
+    loadCreditCards();
+  };
+  $('#creApp').onchange = () => { creQ.app_id = $('#creApp').value; creQ.page = 1; loadCreditCards(); };
+  $('#creStatus').onchange = () => { creQ.status = $('#creStatus').value; creQ.page = 1; loadCreditCards(); };
+  $('#creKw').onkeydown = e => { if (e.key === 'Enter') $('#creSearch').click(); };
+
+  loadCreditCards();
+};
+
+async function loadCreditCards() {
+  // 只查额度卡/次数卡，不查时长卡
+  const p = new URLSearchParams({
+    page: creQ.page, size: 20, kw: creQ.kw,
+    status: creQ.status, app_id: creQ.app_id,
+    unit: creQ.unitFilter || '',
+  });
+  // 分别查额度卡和次数卡（分两次请求后合并，或后端支持多值）
+  const [creditRes, countRes] = await Promise.all([
+    req('/api/admin/cards?' + new URLSearchParams({
+      page: 1, size: 500, kw: creQ.kw, status: creQ.status,
+      app_id: creQ.app_id, unit: 'credit',
+    })),
+    req('/api/admin/cards?' + new URLSearchParams({
+      page: 1, size: 500, kw: creQ.kw, status: creQ.status,
+      app_id: creQ.app_id, unit: 'count',
+    })),
+  ]);
+
+  let all = [...(creditRes.list || []), ...(countRes.list || [])];
+  // 按 app_id 名称映射
+  all.sort((a, b) => b.id - a.id);
+
+  const total = all.length;
+  const start = (creQ.page - 1) * 20;
+  const pageList = all.slice(start, start + 20);
+
+  $('#creTotal').textContent = `共 ${total} 张`;
+  const box = $('#creTb');
+  if (!pageList.length) {
+    box.innerHTML = '<div class="empty">还没有额度卡，用上方的表单生成</div>';
+    $('#crePg').innerHTML = '';
+    return;
+  }
+
+  box.innerHTML = `<table class="tb tb-mobile">
+    <thead><tr>
+      <th style="width:38px"><input type="checkbox" id="creCheckAll"
+        style="width:16px;height:16px;cursor:pointer" title="全选本页"></th>
+      <th>卡密</th><th>面值</th><th>应用</th><th>类型</th><th>状态</th>
+      <th>绑定设备</th><th>来源</th><th>创建时间</th><th>操作</th>
+    </tr></thead><tbody>
+    ${pageList.map(c => `<tr>
+      <td data-l="选择"><input type="checkbox" class="cre-chk"
+        value="${esc(c.card_key)}" style="width:16px;height:16px;cursor:pointer"></td>
+      <td data-l="卡密"><span class="mono">${esc(c.card_key)}</span>
+        <button class="btn ghost sm" style="padding:1px 7px;margin-left:4px"
+          onclick="copy('${esc(c.card_key)}')">复制</button></td>
+      <td data-l="面值"><b style="color:var(--brand);font-size:15px">${c.value}</b>
+        <span style="color:var(--dim);font-size:12px">额度</span></td>
+      <td data-l="应用"><span class="tag p">${esc(c.app_name || c.app_id)}</span></td>
+      <td data-l="类型">${esc(c.type_name)}</td>
+      <td data-l="状态">${statusTag(c.status)}</td>
+      <td data-l="设备" class="mono" style="font-size:11.5px">
+        ${c.owner_device ? esc(c.owner_device.slice(0, 16)) : '-'}</td>
+      <td data-l="来源">${c.agent_name ? esc(c.agent_name) : '管理员'}</td>
+      <td data-l="创建">${fmtTime(c.created_at)}</td>
+      <td data-l="操作" style="white-space:nowrap">
+        <button class="btn ghost sm" onclick="creditAct(${c.id},'disable')">
+          ${c.status === 'disabled' ? '解封' : '封禁'}</button>
+        <button class="btn ghost sm" onclick="creditAct(${c.id},'reset')">重置</button>
+        <button class="btn ghost sm" onclick="creditAct(${c.id},'del')">删除</button>
+      </td></tr>`).join('')}
+    </tbody></table>`;
+
+  bindCreditCheckbox();
+
+  const pages = Math.ceil(total / 20);
+  $('#crePg').innerHTML = `<span>第 ${creQ.page} / ${pages || 1} 页，共 ${total} 张</span>
+    <button ${creQ.page <= 1 ? 'disabled' : ''} onclick="creditPage(${creQ.page - 1})">上一页</button>
+    <button ${creQ.page >= pages ? 'disabled' : ''} onclick="creditPage(${creQ.page + 1})">下一页</button>`;
+}
+
+/* 勾选逻辑（额度卡列表） */
+function bindCreditCheckbox() {
+  const all = $('#creCheckAll');
+  const bar = $('#creSelBar');
+  if (!all) return;
+
+  function refresh() {
+    const n = $A('.cre-chk:checked').length;
+    if (bar) {
+      bar.style.display = n > 0 ? 'flex' : 'none';
+      $('#creSelCount').textContent = n;
+    }
+    const total = $A('.cre-chk').length;
+    all.checked = n > 0 && n === total;
+    all.indeterminate = n > 0 && n < total;
+  }
+
+  all.onchange = () => {
+    $A('.cre-chk').forEach(c => { c.checked = all.checked; });
+    refresh();
+  };
+  $A('.cre-chk').forEach(c => c.onchange = refresh);
+
+  const getSel = () => $A('.cre-chk:checked').map(c => c.value);
+
+  $('#creSelCopy').onclick = () => {
+    const sel = getSel();
+    if (!sel.length) return toast('请先勾选', 'err');
+    copy(sel.join('\n'));
+  };
+  $('#creSelDl').onclick = () => {
+    const sel = getSel();
+    if (!sel.length) return toast('请先勾选', 'err');
+    download(`额度卡_${sel.length}张_${Date.now()}.txt`, sel.join('\r\n'));
+  };
+  $('#creSelClear').onclick = () => {
+    $A('.cre-chk').forEach(c => { c.checked = false; });
+    refresh();
+  };
+}
+
+function creditPage(p) { creQ.page = p; loadCreditCards(); }
+
+async function creditAct(id, act) {
+  try {
+    if (act === 'del') {
+      if (!confirm('删除后不可恢复，确定删除这张卡？')) return;
+      await req('/api/admin/cards/' + id, { method: 'DELETE' });
+      toast('已删除', 'ok');
+    } else {
+      const j = await req(`/api/admin/cards/${id}/${act}`, { method: 'POST' });
+      toast(j.msg, 'ok');
+    }
+    loadCreditCards();
+  } catch (e) {}
+}
+
+/* ---------- 卡类型（时长卡 / 额度卡 分开管理） ---------- */
+let TYPE_LIST = [];
+let TYPE_APP = 'default';
+
+PAGES.types = async (el) => {
+  const j = await req('/api/admin/apps');
+  APPS = j.list;
+  if (!APPS.find(a => a.app_id === TYPE_APP)) TYPE_APP = APPS[0] ? APPS[0].app_id : 'default';
+
+  el.innerHTML = `
+  <div class="card" style="margin-bottom:14px"><div class="bd"><div class="row">
+    <div class="f" style="max-width:260px"><label>所属应用</label>
+      <select id="tApp">${APPS.map(a => `<option value="${esc(a.app_id)}" ${a.app_id === TYPE_APP ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
+    </div>
+    <div class="f" style="flex:0 0 auto">
+      <button class="btn" onclick="typeEdit(null,'day')">＋ 新增时长卡</button>
+    </div>
+    <div class="f" style="flex:0 0 auto">
+      <button class="btn ok" onclick="typeEdit(null,'credit')">＋ 新增额度卡</button>
+    </div>
+  </div></div></div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="hd"><h2>⏱ 时长卡</h2>
+      <span class="hint" style="margin:0">小时卡 / 天卡 / 周卡 / 月卡 / 季卡 / 年卡 —— 激活后按对应时长累加到到期时间</span></div>
+    <div class="tbwrap" id="dayTb"></div>
+  </div>
+
+  <div class="card">
+    <div class="hd"><h2>💰 额度卡</h2>
+      <span class="hint" style="margin:0">激活后直接给账户增加额度（面值在生成时填写）</span></div>
+    <div class="tbwrap" id="creditTb"></div>
+  </div>`;
+
+  $('#tApp').onchange = () => { TYPE_APP = $('#tApp').value; loadTypesPanel(); };
+  await loadTypesPanel();
+};
+
+async function loadTypesPanel() {
+  const r = await req('/api/admin/types?app_id=' + encodeURIComponent(TYPE_APP));
+  TYPE_LIST = r.list;
+  TYPES = r.list;
+
+  // 时长卡 = 小时卡 + 天卡，小时卡排在前面
+  const time = r.list.filter(t => t.unit === 'hour' || t.unit === 'day')
+    .sort((a, b) => {
+      const order = u => (u === 'hour' ? 0 : 1);
+      return order(a.unit) - order(b.unit) || a.sort - b.sort;
+    });
+  const credit = r.list.filter(t => t.unit === 'credit');
+
+  const row = (t) => `<tr>
+    <td data-l="代码"><span class="mono">${esc(t.code)}</span></td>
+    <td data-l="名称">${esc(t.name)}</td>
+    <td data-l="单位">${t.unit === 'hour' ? '<span class="tag wait">小时</span>' : '<span class="tag p">天</span>'}</td>
+    <td data-l="面值">${t.unit === 'credit'
+      ? '<span class="tag wait">生成时手填</span>'
+      : (t.value > 0 ? t.value + (t.unit === 'hour' ? ' 小时' : ' 天')
+                     : '<span style="color:var(--warn)">未设置</span>')}</td>
+    <td data-l="状态">${t.enabled ? '<span class="tag ok">启用</span>' : '<span class="tag off">停用</span>'}</td>
+    <td data-l="排序">${t.sort}</td>
+    <td data-l="操作" style="white-space:nowrap">
+      <button class="btn ghost sm" onclick="typeEdit(${t.id})">编辑</button>
+      <button class="btn ghost sm" onclick="typeToggle(${t.id},${t.enabled ? 0 : 1})">${t.enabled ? '停用' : '启用'}</button>
+      <button class="btn ghost sm" onclick="typeDel(${t.id})">删除</button>
+    </td></tr>`;
+
+  const headTime = `<table class="tb tb-mobile"><thead><tr>
+    <th>代码</th><th>名称</th><th>单位</th><th>面值</th><th>状态</th><th>排序</th><th>操作</th>
+  </tr></thead><tbody>`;
+  const headCredit = `<table class="tb tb-mobile"><thead><tr>
+    <th>代码</th><th>名称</th><th>单位</th><th>面值</th><th>状态</th><th>排序</th><th>操作</th>
+  </tr></thead><tbody>`;
+
+  $('#dayTb').innerHTML = time.length
+    ? headTime + time.map(t => row(t)).join('') + '</tbody></table>'
+    : '<div class="empty">还没有时长卡，点上方「新增时长卡」创建</div>';
+
+  $('#creditTb').innerHTML = credit.length
+    ? headCredit + credit.map(t => row(t)).join('') + '</tbody></table>'
+    : '<div class="empty">还没有额度卡，点上方「新增额度卡」创建</div>';
+}
+
+async function typeEdit(id, defaultUnit) {
+  const t = id
+    ? TYPE_LIST.find(x => x.id === id)
+    : { code: '', name: '', unit: (defaultUnit || 'day'), value: defaultUnit === 'credit' ? 0 : 1, sort: 100, remark: '', enabled: 1 };
+  const unit = id ? t.unit : (defaultUnit || 'day');
+  const titleMap = { hour: '新增时长卡', day: '新增时长卡', credit: '新增额度卡' };
+
+  openModal(id ? '编辑卡类型' : (titleMap[unit] || '新增卡类型'), `
+    <div class="f"><label>类型代码（英文，同应用内唯一）</label>
+      <input id="ftCode" value="${esc(t.code)}" ${id ? 'disabled' : ''} placeholder="如 hour6"></div>
+    <div class="f"><label>显示名称</label>
+      <input id="ftName" value="${esc(t.name)}" placeholder="${unit === 'credit' ? '如 额度卡' : '如 6小时卡 / 月卡'}"></div>
+    <div class="f"><label>计费方式</label>
+      <select id="ftUnit" ${id ? 'disabled' : ''}>
+        <option value="hour" ${unit === 'hour' ? 'selected' : ''}>小时卡（按小时累加）</option>
+        <option value="day" ${unit === 'day' ? 'selected' : ''}>天卡（按天累加）</option>
+        <option value="credit" ${unit === 'credit' ? 'selected' : ''}>额度卡（充值额度）</option>
+      </select></div>
+    <div class="f"><label id="ftValueLabel">${unit === 'hour' ? '时长（小时）' : unit === 'day' ? '时长（天）' : '默认面值（可留空）'}</label>
+      <input id="ftValue" type="number" value="${t.value || ''}"
+        placeholder="${unit === 'hour' ? '如 6' : unit === 'day' ? '如 30' : '留空则在生成时手动填写'}"></div>
+    <div class="f"><label>排序（小的在前）</label><input id="ftSort" type="number" value="${t.sort}"></div>
+    <div class="f"><label>备注</label><input id="ftRemark" value="${esc(t.remark || '')}"></div>
+  `, `<button class="btn ghost" onclick="closeModal()">取消</button>
+      <button class="btn" id="ftSave">保存</button>`);
+
+  const unitSel = $('#ftUnit');
+  if (unitSel) unitSel.onchange = () => {
+    const u = unitSel.value;
+    if (u === 'hour') {
+      $('#ftValueLabel').textContent = '时长（小时）';
+      $('#ftValue').placeholder = '如 6';
+    } else if (u === 'day') {
+      $('#ftValueLabel').textContent = '时长（天）';
+      $('#ftValue').placeholder = '如 30';
+    } else {
+      $('#ftValueLabel').textContent = '默认面值（可留空）';
+      $('#ftValue').placeholder = '留空则在生成时手动填写';
+    }
+  };
+
+  $('#ftSave').onclick = async () => {
+    const body = {
+      app_id: TYPE_APP,
+      code: $('#ftCode').value.trim(),
+      name: $('#ftName').value.trim(),
+      unit: $('#ftUnit').value,
+      value: parseInt($('#ftValue').value, 10) || 0,
+      sort: parseInt($('#ftSort').value, 10) || 100,
+      remark: $('#ftRemark').value.trim(),
+      enabled: t.enabled,
+    };
+    if (!body.code || !body.name) return toast('代码和名称必填', 'err');
+    try {
+      if (id) await req('/api/admin/types/' + id, { method: 'PUT', body });
+      else await req('/api/admin/types', { body });
+      toast('已保存', 'ok'); closeModal(); loadTypesPanel();
+    } catch (e) {}
+  };
+}
+
+async function typeToggle(id, en) {
+  const t = TYPE_LIST.find(x => x.id === id);
+  await req('/api/admin/types/' + id, { method: 'PUT', body: {
+    name: t.name, unit: t.unit, value: t.value,
+    sort: t.sort, remark: t.remark, enabled: en,
+  }});
+  toast(en ? '已启用' : '已停用', 'ok');
+  loadTypesPanel();
+}
+async function typeDel(id) {
+  if (!confirm('删除后不影响已生成的卡密，确定删除该类型？')) return;
+  await req('/api/admin/types/' + id, { method: 'DELETE' });
+  toast('已删除', 'ok');
+  loadTypesPanel();
+}
+
+/* ---------- 用户额度 ---------- */
+let userQ = { page: 1, kw: '' };
+PAGES.users = async (el) => {
+  el.innerHTML = `
+  <div class="card" style="margin-bottom:14px"><div class="bd"><div class="row">
+    <div class="f grow"><label>搜索卡密</label><input id="uKw" value="${esc(userQ.kw)}" placeholder="卡密关键字"></div>
+    <div class="f" style="flex:0 0 auto"><button class="btn" id="uSearch">查询</button></div>
+  </div></div></div>
+  <div class="card">
+    <div class="hd"><h2>用户额度账户</h2></div>
+    <div class="tbwrap" id="userTb"><div class="empty">加载中...</div></div>
+    <div class="pg" id="userPg"></div>
+  </div>`;
+  $('#uSearch').onclick = () => { userQ.kw = $('#uKw').value.trim(); userQ.page = 1; loadUsers(); };
+  $('#uKw').onkeydown = e => e.key === 'Enter' && $('#uSearch').click();
+  loadUsers();
+};
+
+async function loadUsers() {
+  const p = new URLSearchParams({ page: userQ.page, size: 20, kw: userQ.kw });
+  const d = await req('/api/admin/users?' + p);
+  const box = $('#userTb');
+  if (!d.list.length) { box.innerHTML = '<div class="empty">暂无用户（用户激活卡密后自动创建）</div>'; $('#userPg').innerHTML = ''; return; }
+  box.innerHTML = `<table class="tb tb-mobile">
+    <thead><tr><th>卡密</th><th>剩余额度</th><th>累计充值</th><th>已消耗</th><th>会员到期</th><th>状态</th><th>操作</th></tr></thead>
+    <tbody>${d.list.map(u => `<tr>
+      <td data-l="卡密"><span class="mono">${esc(u.card_key)}</span></td>
+      <td data-l="剩余额度"><b>${u.credit}</b></td>
+      <td data-l="累计充值">${u.total_credit}</td>
+      <td data-l="已消耗">${u.used_credit}</td>
+      <td data-l="到期">${u.expire_at_text}</td>
+      <td data-l="状态">${u.ban ? '<span class="tag err">已封禁</span>' : (u.is_vip ? '<span class="tag ok">VIP</span>' : '<span class="tag off">普通</span>')}</td>
+      <td data-l="操作" style="white-space:nowrap">
+        <button class="btn ghost sm" onclick="creditEdit('${esc(u.card_key)}')">改额度</button>
+        <button class="btn ghost sm" onclick="userBan('${esc(u.card_key)}',${u.ban ? 0 : 1})">${u.ban ? '解封' : '封禁'}</button>
+      </td></tr>`).join('')}</tbody></table>`;
+  const pages = Math.ceil(d.total / 20);
+  $('#userPg').innerHTML = `<span>第 ${d.page} / ${pages || 1} 页，共 ${d.total} 条</span>
+    <button ${d.page <= 1 ? 'disabled' : ''} onclick="userPage(${d.page - 1})">上一页</button>
+    <button ${d.page >= pages ? 'disabled' : ''} onclick="userPage(${d.page + 1})">下一页</button>`;
+}
+function userPage(p) { userQ.page = p; loadUsers(); }
+
+function creditEdit(key) {
+  openModal('调整额度 · ' + key, `
+    <div class="f"><label>变动数量（正数=增加，负数=扣减）</label><input id="fcDelta" type="number" value="10"></div>
+    <div class="f"><label>备注</label><input id="fcRemark" placeholder="如：补偿/退款"></div>
+  `, `<button class="btn ghost" onclick="closeModal()">取消</button>
+      <button class="btn" id="fcSave">确认</button>`);
+  $('#fcSave').onclick = async () => {
+    const delta = parseInt($('#fcDelta').value, 10);
+    if (!delta) return toast('数量不能为0', 'err');
+    try {
+      const j = await req('/api/admin/users/credit', {
+        body: { card_key: key, delta, remark: $('#fcRemark').value }
+      });
+      toast(j.msg, 'ok'); closeModal(); loadUsers();
+    } catch (e) {}
+  };
+}
+async function userBan(key, ban) {
+  if (!confirm(ban ? '确定封禁该用户？封禁后无法验证' : '确定解封？')) return;
+  await req('/api/admin/users/ban', { body: { card_key: key, ban } });
+  toast('操作成功', 'ok'); loadUsers();
+}
+
+/* ---------- 代理商 ---------- */
+PAGES.agents = async (el) => {
+  el.innerHTML = `
+  <div class="card" style="margin-bottom:14px"><div class="hd"><h2>代理商列表</h2>
+    <button class="btn sm" id="agAdd">＋ 新增代理</button></div>
+    <div class="tbwrap" id="agTb"><div class="empty">加载中...</div></div>
+    <div class="pg" id="agPg"></div>
+  </div>
+  <div class="card"><div class="bd">
+    <div class="hint" style="margin:0">
+      <b>代理机制</b>：代理可在代理后台自行生成卡密（不涉及价格）；上级代理从下级生成卡中自动获得 20% 分润；
+      代理可通过 <code class="inl">/register</code> 页面自助注册（可在系统设置里关闭）。
+    </div>
+  </div></div>`;
+  $('#agAdd').onclick = () => agentEdit(null);
+  loadAgents();
+};
+
+async function loadAgents() {
+  const d = await req('/api/admin/agents?size=100');
+  const box = $('#agTb');
+  if (!d.list.length) { box.innerHTML = '<div class="empty">暂无代理</div>'; $('#agPg').innerHTML = ''; return; }
+  const lv = { 1: '普通', 2: '银牌', 3: '金牌', 4: '总代' };
+  box.innerHTML = `<table class="tb tb-mobile">
+    <thead><tr><th>账号</th><th>昵称/联系</th><th>等级</th><th>余额</th>
+      <th>卡数</th><th>下级</th><th>状态</th><th>操作</th></tr></thead>
+    <tbody>${d.list.map(a => `<tr>
+      <td data-l="账号"><b>${esc(a.username)}</b><br><span class="hint" style="margin:0">API:${esc((a.api_key || '').slice(0, 12))}…</span></td>
+      <td data-l="昵称">${esc(a.nickname || '-')}<br><span class="hint" style="margin:0">${esc(a.contact || '')}</span></td>
+      <td data-l="等级"><span class="tag p">${lv[a.level] || a.level}</span></td>
+      <td data-l="余额"><b>¥${a.balance.toFixed(2)}</b></td>
+      <td data-l="卡数">${a.card_count}</td>
+      <td data-l="下级">${a.child_count}</td>
+      <td data-l="状态">${a.frozen ? '<span class="tag err">冻结</span>' : '<span class="tag ok">正常</span>'}</td>
+      <td data-l="操作" style="white-space:nowrap">
+        <button class="btn ghost sm" onclick="agentBal(${a.id})">加款</button>
+        <button class="btn ghost sm" onclick="agentEdit(${a.id})">编辑</button>
+        <button class="btn ghost sm" onclick="agentPwd(${a.id})">改密</button>
+        <button class="btn ghost sm" onclick="agentDel(${a.id})">删除</button>
+      </td></tr>`).join('')}</tbody></table>`;
+  $('#agPg').innerHTML = `<span>共 ${d.total} 个代理</span>`;
+}
+
+async function agentEdit(id) {
+  let a = { username: '', password: '', nickname: '', contact: '', level: 1, balance: 0 };
+  if (id) {
+    const j = await req('/api/admin/agents?size=500');
+    a = j.list.find(x => x.id === id) || a;
+  }
+  openModal(id ? '编辑代理 · ' + a.username : '新增代理', `
+    ${id ? '' : `<div class="f"><label>登录账号</label><input id="faUser" placeholder="字母数字下划线"></div>
+    <div class="f"><label>登录密码</label><input id="faPwd" placeholder="至少6位"></div>`}
+    <div class="f"><label>昵称</label><input id="faNick" value="${esc(a.nickname || '')}"></div>
+    <div class="f"><label>联系方式（QQ/微信）</label><input id="faContact" value="${esc(a.contact || '')}"></div>
+    <div class="f"><label>等级</label><select id="faLevel">
+      <option value="1" ${a.level == 1 ? 'selected' : ''}>普通代理</option>
+      <option value="2" ${a.level == 2 ? 'selected' : ''}>银牌代理</option>
+      <option value="3" ${a.level == 3 ? 'selected' : ''}>金牌代理</option>
+      <option value="4" ${a.level == 4 ? 'selected' : ''}>总代理</option>
+    </select></div>
+    ${id ? `<div class="f"><label>冻结</label><select id="faFrozen">
+      <option value="0" ${!a.frozen ? 'selected' : ''}>正常</option>
+      <option value="1" ${a.frozen ? 'selected' : ''}>冻结</option></select></div>`
+    : `<div class="f"><label>初始余额 ¥</label><input id="faBal" type="number" step="0.01" value="0"></div>`}
+  `, `<button class="btn ghost" onclick="closeModal()">取消</button>
+      <button class="btn" id="faSave">保存</button>`);
+
+  $('#faSave').onclick = async () => {
+    try {
+      if (id) {
+        await req('/api/admin/agents/' + id, { method: 'PUT', body: {
+          nickname: $('#faNick').value, contact: $('#faContact').value,
+          level: parseInt($('#faLevel').value, 10),
+          frozen: parseInt($('#faFrozen').value, 10),
+        }});
+      } else {
+        const j = await req('/api/admin/agents', { body: {
+          username: $('#faUser').value.trim(), password: $('#faPwd').value,
+          nickname: $('#faNick').value, contact: $('#faContact').value,
+          level: parseInt($('#faLevel').value, 10),
+          balance: parseFloat($('#faBal').value) || 0,
+        }});
+        alert('代理创建成功！\n\nAPI 密钥（请保存给代理）：\n' + j.api_key);
+      }
+      toast('已保存', 'ok'); closeModal(); loadAgents();
+    } catch (e) {}
+  };
+}
+
+function agentBal(id) {
+  openModal('调整代理余额', `
+    <div class="f"><label>变动金额（正=加款，负=扣款）</label><input id="fbDelta" type="number" step="0.01" value="100"></div>
+  `, `<button class="btn ghost" onclick="closeModal()">取消</button>
+      <button class="btn" id="fbSave">确认</button>`);
+  $('#fbSave').onclick = async () => {
+    try {
+      const j = await req(`/api/admin/agents/${id}/balance`, {
+        body: { delta: parseFloat($('#fbDelta').value) }
+      });
+      toast(j.msg, 'ok'); closeModal(); loadAgents();
+    } catch (e) {}
+  };
+}
+
+async function agentPwd(id) {
+  const p = prompt('输入新密码（至少6位）：', '123456');
+  if (!p) return;
+  const j = await req(`/api/admin/agents/${id}/resetpwd`, { body: { password: p } });
+  toast(j.msg, 'ok');
+}
+async function agentDel(id) {
+  if (!confirm('删除代理不会删除其已生成的卡密，确定？')) return;
+  await req('/api/admin/agents/' + id, { method: 'DELETE' });
+  toast('已删除', 'ok'); loadAgents();
+}
+
+/* ---------- 提现审核 ---------- */
+PAGES.withdraw = async (el) => {
+  const d = await req('/api/admin/withdrawals');
+  el.innerHTML = `<div class="card">
+    <div class="hd"><h2>提现申请</h2><span class="hint" style="margin:0">驳回会自动退回代理余额</span></div>
+    <div class="tbwrap">${!d.list.length ? '<div class="empty">暂无提现申请</div>' :
+    `<table class="tb tb-mobile">
+      <thead><tr><th>ID</th><th>代理</th><th>金额</th><th>收款账号</th><th>状态</th><th>申请时间</th><th>操作</th></tr></thead>
+      <tbody>${d.list.map(w => `<tr>
+        <td data-l="ID">#${w.id}</td>
+        <td data-l="代理">${esc(w.username || w.agent_id)}</td>
+        <td data-l="金额"><b>¥${w.amount}</b></td>
+        <td data-l="账号" class="mono" style="font-size:12px">${esc(w.account)}</td>
+        <td data-l="状态">${statusTag(w.status)}</td>
+        <td data-l="时间">${fmtTime(w.created_at)}</td>
+        <td data-l="操作">${w.status === 'pending'
+          ? `<button class="btn ok sm" onclick="wdDo(${w.id},'paid')">标记已打款</button>
+             <button class="btn danger sm" onclick="wdDo(${w.id},'rejected')">驳回</button>`
+          : '<span class="hint" style="margin:0">已处理</span>'}</td></tr>`).join('')}</tbody>
+    </table>`}</div></div>`;
+};
+
+async function wdDo(id, status) {
+  const remark = status === 'rejected' ? (prompt('驳回原因：', '信息有误') || '') : '';
+  await req('/api/admin/withdrawals/' + id, { body: { status, remark } });
+  toast('已处理', 'ok'); go('withdraw');
+}
+
+/* ---------- 验证日志 ---------- */
+let logQ = { page: 1, kw: '', action: '', onlyFail: '' };
+PAGES.logs = async (el) => {
+  el.innerHTML = `
+  <div class="card" style="margin-bottom:14px"><div class="bd"><div class="row">
+    <div class="f grow"><label>搜索（卡密/机器码/IP）</label><input id="lKw" value="${esc(logQ.kw)}"></div>
+    <div class="f"><label>动作</label><select id="lAct">
+      <option value="">全部</option>
+      <option value="verify">verify 验证</option>
+      <option value="activate">activate 激活</option>
+      <option value="heartbeat">heartbeat 心跳</option>
+      <option value="redeem">redeem 充值</option>
+      <option value="consume">consume 扣费</option>
+      <option value="sign">sign 签名失败</option>
+    </select></div>
+    <div class="f"><label>只看失败</label><select id="lFail">
+      <option value="">否</option><option value="1">是</option></select></div>
+    <div class="f" style="flex:0 0 auto"><button class="btn" id="lSearch">查询</button></div>
+  </div></div></div>
+  <div class="card"><div class="hd"><h2>验证日志 <span class="hint" id="logTotal" style="margin:0"></span></h2>
+    <button class="btn ghost sm" onclick="go('logs')">刷新</button></div>
+    <div class="tbwrap" id="logTb"><div class="empty">加载中...</div></div>
+    <div class="pg" id="logPg"></div></div>`;
+  $('#lAct').value = logQ.action; $('#lFail').value = logQ.onlyFail;
+  $('#lSearch').onclick = () => {
+    logQ.kw = $('#lKw').value.trim(); logQ.action = $('#lAct').value;
+    logQ.onlyFail = $('#lFail').value; logQ.page = 1; loadLogs();
+  };
+  loadLogs();
+};
+
+async function loadLogs() {
+  const p = new URLSearchParams({
+    page: logQ.page, size: 30, kw: logQ.kw, action: logQ.action, onlyFail: logQ.onlyFail
+  });
+  const d = await req('/api/admin/logs?' + p);
+  $('#logTotal').textContent = `共 ${d.total} 条`;
+  const box = $('#logTb');
+  if (!d.list.length) { box.innerHTML = '<div class="empty">暂无日志</div>'; $('#logPg').innerHTML = ''; return; }
+  box.innerHTML = `<table class="tb tb-mobile">
+    <thead><tr><th>时间</th><th>动作</th><th>卡密</th><th>机器码</th><th>IP</th><th>结果</th><th>说明</th></tr></thead>
+    <tbody>${d.list.map(r => `<tr>
+      <td data-l="时间" style="white-space:nowrap;font-size:12px">${esc(r.time_text)}</td>
+      <td data-l="动作"><span class="tag wait">${esc(r.action)}</span></td>
+      <td data-l="卡密" class="mono" style="font-size:11.5px">${esc(r.card_key || '-')}</td>
+      <td data-l="机器码" class="mono" style="font-size:11px">${esc((r.device_id || '-').slice(0, 20))}</td>
+      <td data-l="IP" style="font-size:12px">${esc(r.ip || '-')}</td>
+      <td data-l="结果">${r.ok ? '<span class="tag ok">成功</span>' : '<span class="tag err">失败</span>'}</td>
+      <td data-l="说明" style="font-size:12px">${esc(r.msg || '')}</td></tr>`).join('')}</tbody></table>`;
+  const pages = Math.ceil(d.total / 30);
+  $('#logPg').innerHTML = `<span>第 ${d.page} / ${pages || 1} 页</span>
+    <button ${d.page <= 1 ? 'disabled' : ''} onclick="logPage(${d.page - 1})">上一页</button>
+    <button ${d.page >= pages ? 'disabled' : ''} onclick="logPage(${d.page + 1})">下一页</button>`;
+}
+function logPage(p) { logQ.page = p; loadLogs(); }
+
+/* ---------- 系统设置 ---------- */
+PAGES.setting = async (el) => {
+  const j = await req('/api/admin/settings');
+  const s = j.settings;
+  const origin = location.origin;
+  el.innerHTML = `
+  <div class="grid2">
+    <div class="card"><div class="hd"><h2>基础设置</h2></div>
+      <div class="bd" style="display:flex;flex-direction:column;gap:14px">
+        <div class="f"><label>站点名称</label><input id="sName" value="${esc(s.site_name || '')}"></div>
+        <div class="f"><label>卡密前缀（可空，如 VIP-）</label><input id="sPrefix" value="${esc(s.card_prefix || '')}"></div>
+        <div class="f"><label>设备绑定</label><select id="sBind">
+          <option value="1" ${s.bind_device === '1' ? 'selected' : ''}>开启（卡密绑定机器码）</option>
+          <option value="0" ${s.bind_device === '0' ? 'selected' : ''}>关闭（不限设备）</option></select></div>
+        <div class="f"><label>接口签名校验</label><select id="sSign">
+          <option value="1" ${s.sign_required === '1' ? 'selected' : ''}>开启（推荐，防抓包伪造）</option>
+          <option value="0" ${s.sign_required === '0' ? 'selected' : ''}>关闭（便于联调）</option></select></div>
+        <div class="f"><label>心跳间隔（秒）</label><input id="sHeart" type="number" value="${esc(s.heart_interval || '300')}"></div>
+        <div class="f"><label>额度换算倍率（1张10额度卡=多少额度）</label><input id="sRate" type="number" step="0.1" value="${esc(s.recharge_rate || '1')}"></div>
+        <div class="f"><label>卡密自助解绑</label><select id="sSelfUnbind">
+          <option value="1" ${s.self_unbind !== '0' ? 'selected' : ''}>开放（用户可自己解绑 /unbind）</option>
+          <option value="0" ${s.self_unbind === '0' ? 'selected' : ''}>关闭（只能找你解绑）</option></select></div>
+        <div class="f"><label>开放代理自助注册</label><select id="sReg">
+          <option value="1" ${s.agent_register_open === '1' ? 'selected' : ''}>开放</option>
+          <option value="0" ${s.agent_register_open === '0' ? 'selected' : ''}>关闭</option></select></div>
+        <button class="btn" id="sSave">保存设置</button>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card"><div class="hd"><h2>通信密钥（客户端必须一致）</h2></div>
+        <div class="bd">
+          <div style="background:#f8f9fc;border:1px solid var(--line);border-radius:8px;padding:12px;font-family:ui-monospace,monospace;font-size:12px;word-break:break-all">${esc(s.api_secret)}</div>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn ghost sm" onclick="copy('${esc(s.api_secret)}')">复制密钥</button>
+            <button class="btn danger sm" id="sRotate">重置密钥</button>
+          </div>
+          <div class="hint">重置后所有旧客户端会验证失败，必须同步更新客户端里的密钥。</div>
+        </div>
+      </div>
+
+      <div class="card"><div class="hd"><h2>访问地址</h2></div>
+        <div class="bd" style="font-size:13px;line-height:2">
+          <div>管理后台：<code class="inl">${origin}/admin</code></div>
+          <div>代理后台：<code class="inl">${origin}/agent</code></div>
+          <div>代理注册：<code class="inl">${origin}/register</code></div>
+          <div>接口地址：<code class="inl">${origin}/api/client/</code></div>
+          <div class="hint">手机与电脑在同一 WiFi 下，把 localhost 换成本机局域网 IP 即可在手机访问。</div>
+        </div>
+      </div>
+
+      <div class="card"><div class="hd"><h2>修改管理员密码</h2></div>
+        <div class="bd" style="display:flex;flex-direction:column;gap:12px">
+          <div class="f"><label>原密码</label><input id="pOld" type="password"></div>
+          <div class="f"><label>新密码（≥6位）</label><input id="pNew" type="password"></div>
+          <button class="btn" id="pSave">修改密码</button>
+        </div>
+      </div>
+
+      <div class="card"><div class="hd"><h2>数据备份</h2></div>
+        <div class="bd">
+          <button class="btn ok" onclick="location.href='/api/admin/backup?token='+tokenGet('adm_token')">下载数据库备份</button>
+          <div class="hint">备份文件为 .db，恢复时停服务后替换 data/cardauth.db 即可。</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  $('#sSave').onclick = async () => {
+    await req('/api/admin/settings', { body: {
+      site_name: $('#sName').value, card_prefix: $('#sPrefix').value,
+      bind_device: $('#sBind').value, sign_required: $('#sSign').value,
+      heart_interval: $('#sHeart').value, recharge_rate: $('#sRate').value,
+      agent_register_open: $('#sReg').value,
+      self_unbind: $('#sSelfUnbind').value,
+    }});
+    toast('设置已保存', 'ok');
+  };
+  $('#sRotate').onclick = async () => {
+    if (!confirm('重置后所有客户端密钥失效，确定？')) return;
+    const r = await req('/api/admin/secret/rotate', { method: 'POST' });
+    alert('新密钥：\n' + r.api_secret + '\n\n请立即更新客户端代码。');
+    go('setting');
+  };
+  $('#pSave').onclick = async () => {
+    await req('/api/admin/password', { body: { old_pwd: $('#pOld').value, new_pwd: $('#pNew').value } });
+    toast('密码已修改，请重新登录', 'ok');
+    setTimeout(() => { tokenDel('adm_token'); location.reload(); }, 1200);
+  };
+};
+
+/* ---------- 对接文档 ---------- */
+/* ---------- 对接文档（按应用分类 × 三类文档） ---------- */
+PAGES.apidoc = async (el) => {
+  const aj = await req('/api/admin/apps');
+  APPS = aj.list;
+  const O = location.origin;
+  const LINKS = [
+    { name: '卡密自助解绑', url: O + '/unbind', desc: '用户换机后自己解绑旧设备，不用找你', icon: '🔓', color: '#f79009' },
+    { name: '代理登录', url: O + '/agent', desc: '代理登录后台，自己生成卡密、查看余额、申请提现', icon: '👤', color: '#2f6bff' },
+    { name: '代理注册', url: O + '/register', desc: '代理自助注册页面，带上级参数可绑定关系', icon: '✍️', color: '#7a5af8' },
+    { name: '用户卡密查询', url: O + '/', desc: '用户在这里查卡密、充值额度、看公告', icon: '🔍', color: '#12b76a' },
+    { name: '管理后台', url: O + '/admin', desc: '你自己用的后台地址', icon: '⚙️', color: '#101828' },
+  ];
+
+  el.innerHTML = `
+  <!-- ===== 实用链接 ===== -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="hd"><h2>📎 实用链接（直接发给用户/代理）</h2>
+      <button class="btn ghost sm" onclick="copyLinks()">复制全部链接</button></div>
+    <div class="bd">
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">
+        ${LINKS.map((l, i) => `
+          <div style="border:1px solid var(--line);border-radius:10px;padding:14px;background:#fff">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+              <span style="font-size:17px">${l.icon}</span>
+              <b style="font-size:14px">${l.name}</b>
+            </div>
+            <div style="font-size:12px;color:var(--dim);margin-bottom:8px;line-height:1.6">${l.desc}</div>
+            <div style="font-family:ui-monospace,monospace;font-size:11.5px;word-break:break-all;
+              background:#f8f9fc;padding:7px 9px;border-radius:6px;margin-bottom:8px;color:#3a4354">${l.url}</div>
+            <div style="display:flex;gap:6px">
+              <button class="btn ghost sm" onclick="copy('${l.url}')">复制</button>
+              <a class="btn sm" href="${l.url}" target="_blank"
+                style="display:inline-block;text-decoration:none;text-align:center">打开</a>
+            </div>
+          </div>`).join('')}
+      </div>
+      <div class="hint" style="margin-top:12px">
+        自助解绑可在「系统设置」里开关。代理注册也可在那里关闭。
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="bd">
+      <div class="row">
+        <div class="f grow"><label>选择应用（不同应用卡密不通用，文档与密钥各自独立）</label>
+          <select id="dApp">${APPS.map(a => `<option value="${esc(a.app_id)}">${esc(a.name)}（${esc(a.app_id)}）</option>`).join('')}</select>
+        </div>
+        <div class="f grow"><label>服务器地址</label>
+          <input id="dOrigin" value="${location.origin}"></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <div class="f grow"><label>该应用的通信密钥 secret</label>
+          <input id="dSecret" readonly style="font-family:ui-monospace,monospace;font-size:12px"></div>
+        <div class="f" style="flex:0 0 auto"><button class="btn ghost" onclick="copy($('#dSecret').value)">复制密钥</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tabs-doc" id="docTabs">
+    <button data-t="orig" class="on">① 原版对接</button>
+    <button data-t="credit">② 额度充值对接</button>
+    <button data-t="crack">③ 破解版对接</button>
+    <button data-t="quick">④ 快速开始</button>
+    <button data-t="api">⑤ 接口与错误码</button>
+  </div>
+
+  <div class="card">
+    <div class="hd">
+      <h2 id="docTitle">原版对接文档</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn ghost sm" onclick="copy($('#docBox').innerText)">复制本页</button>
+        <button class="btn ok sm" id="dDownload">下载本页 .md</button>
+        <button class="btn sm" id="dAll">下载全部文档</button>
+      </div>
+    </div>
+    <div class="bd"><div id="docBox"></div></div>
+  </div>`;
+
+  let CURRENT = 'orig';
+
+  async function refreshSecret() {
+    const appId = $('#dApp').value;
+    const r = await req('/api/admin/apps');
+    const a = r.list.find(x => x.app_id === appId);
+    $('#dSecret').value = a ? a.secret : '';
+    return a;
+  }
+
+  async function render() {
+    const app = await refreshSecret();
+    const BASE = $('#dOrigin').value.replace(/\/$/, '');
+    const SECRET = $('#dSecret').value;
+    const appId = $('#dApp').value;
+    const titles = {
+      orig: '① 原版对接（标准卡密验证）',
+      credit: '② 额度充值对接（充值卡 / 消耗额度）',
+      crack: '③ 破解版对接（绕过验证 / 离线授权）',
+      quick: '④ 快速开始',
+      api: '⑤ 接口清单与错误码',
+    };
+    $('#docTitle').textContent = titles[CURRENT] ? titles[CURRENT].split('（')[0] : '文档';
+
+    const md = DOC_BUILDERS[CURRENT]({ BASE, SECRET, appId, appName: app ? app.name : appId });
+    DOC_TEXT = md;
+    $('#docBox').innerHTML = `<pre class="code" style="max-height:660px;overflow:auto">${
+      esc(md).replace(/^(#{1,3} .*)$/gm,
+        '<span style="color:#7aa2ff;font-weight:600">$1</span>')
+    }</pre>`;
+  }
+
+  $$('#docTabs button').forEach(b => b.onclick = () => {
+    $$('#docTabs button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    CURRENT = b.dataset.t;
+    render();
+  });
+  $('#dApp').onchange = render;
+  $('#dOrigin').onchange = render;
+  $('#dDownload').onclick = () => download(
+    `对接文档_${$('#dApp').value}_${CURRENT}.md`, DOC_TEXT);
+  $('#dAll').onclick = async () => {
+    const parts = [];
+    for (const k of ['quick', 'orig', 'credit', 'crack', 'api']) {
+      const app = await refreshSecret();
+      parts.push(DOC_BUILDERS[k]({
+        BASE: $('#dOrigin').value.replace(/\/$/, ''),
+        SECRET: $('#dSecret').value,
+        appId: $('#dApp').value,
+        appName: app ? app.name : '',
+      }));
+    }
+    download(`完整对接文档_${$('#dApp').value}.md`, parts.join('\n\n---\n\n'));
+  };
+
+  render();
+};
+
+let DOC_TEXT = '';
+
+/* 复制全部实用链接 */
+window.copyLinks = function () {
+  const O = location.origin;
+  const txt = [
+    '卡密自助解绑：' + O + '/unbind',
+    '代理登录：    ' + O + '/agent',
+    '代理注册：    ' + O + '/register',
+    '用户卡密查询：' + O + '/',
+    '管理后台：    ' + O + '/admin',
+  ].join('\n');
+  copy(txt);
+};
+
+/* =========================================================
+ *  文档构建器
+ * ========================================================= */
+const DOC_BUILDERS = {};
+
+/* ---------- ① 原版对接 ---------- */
+DOC_BUILDERS.orig = ({ BASE, SECRET, appId, appName }) => `# ${appName} · 原版对接文档
+
+> 适用场景：**你自己的软件/工具**，需要用户输入卡密才能使用。
+> 这是标准做法——客户端启动时验证卡密，验证通过才放行功能。
+
+- 应用名称：**${appName}**
+- 应用标识：\`${appId}\`
+- 服务器地址：\`${BASE}\`
+- 通信密钥：\`${SECRET}\`
+
+⚠️ **不同应用的卡密互不通用**。本应用的卡密只能在 \`${appId}\` 下验证；
+如果你有多个软件，请在后台「应用管理」里分别为它们建应用，各自用各自的密钥。
+
+---
+
+## 一、验证流程
+
+\`\`\`
+用户启动软件
+   ↓
+输入卡密 → 调 /api/client/verify
+   ↓
+   ├─ code=0      验证通过 → 进入软件
+   ├─ code=2005   卡未激活 → 调 /api/client/activate 激活后再进
+   ├─ code=2004   已过期   → 提示续费
+   ├─ code=2007   设备超限 → 提示联系客服解绑
+   └─ 其他        失败     → 提示错误并退出
+   ↓
+进入软件后每 5 分钟调 /api/client/heartbeat 保活
+   ↓
+心跳连续失败 3 次 → 锁定功能
+\`\`\`
+
+**关键点：不要只在启动时验证一次。** 破解者通常在启动后补丁跳过验证，
+所以要在关键功能执行前（保存、导出、执行核心操作）再校验一次内存标志位。
+
+---
+
+## 二、签名规则（必须实现）
+
+每个请求都要带 \`sign\` / \`timestamp\` / \`nonce\`：
+
+\`\`\`
+timestamp = 当前 Unix 毫秒时间戳（13 位）
+nonce     = 16 位随机字符串
+bodyJson  = 请求体去掉 sign/timestamp/nonce/card_key/device_id 后，按 key 字母升序的紧凑 JSON
+payload   = card_key + "|" + device_id + "|" + timestamp + "|" + nonce + "|" + bodyJson
+sign      = HMAC_SHA256(secret, payload) 的十六进制小写
+\`\`\`
+
+时间偏差超过 5 分钟会被拒（1004），nonce 重复会被拒（1003）。
+
+---
+
+## 三、Python 完整实现
+
+\`\`\`python
+import json, time, hmac, hashlib, uuid, os, platform, hashlib
+import requests
+
+BASE      = "${BASE}"
+SECRET    = "${SECRET}"
+APP_ID    = "${appId}"
+
+class CardAuth:
+    def __init__(self, card_key, device_id=None):
+        self.card_key  = (card_key or "").strip().upper()
+        self.machine   = device_id or self.gen_machine_code()
+        self.session   = requests.Session()
+
+    @staticmethod
+    def gen_machine_code():
+        """机器码：同一台机器每次必须算出相同值，否则会被判定换机"""
+        import subprocess
+        parts = []
+        if platform.system() == "Windows":
+            try:
+                out = subprocess.check_output(
+                    ["powershell", "-NoProfile", "-Command",
+                     "(Get-CimInstance Win32_ComputerSystemProduct).UUID"],
+                    stderr=subprocess.DEVNULL, timeout=8
+                ).decode(errors="ignore").strip()
+                if out and out != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
+                    parts.append(out)
+            except Exception:
+                pass
+        else:
+            for f in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+                if os.path.exists(f):
+                    parts.append(open(f).read().strip()); break
+        parts += [platform.node(), platform.machine()]
+        raw = "|".join(p for p in parts if p)
+        return hashlib.md5(raw.encode()).hexdigest().upper()
+
+    def _post(self, path, data=None):
+        body    = dict(data or {})
+        ts      = str(int(time.time() * 1000))
+        nonce   = uuid.uuid4().hex
+        clean   = {k: v for k, v in body.items()
+                   if k not in ("sign", "timestamp", "nonce", "card_key", "device_id")}
+        body_js = json.dumps(clean, separators=(",", ":"), sort_keys=True)
+        payload = "|".join([self.card_key, self.machine, ts, nonce, body_js])
+        sign    = hmac.new(SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+        body.update({
+            "card_key": self.card_key, "device_id": self.machine,
+            "timestamp": ts, "nonce": nonce, "sign": sign,
+        })
+        r = self.session.post(BASE + path, json=body, timeout=10)
+        return r.json()
+
+    # ---- 业务 ----
+    def activate(self):   return self._post("/api/client/activate")
+    def verify(self):     return self._post("/api/client/verify")
+    def heartbeat(self):  return self._post("/api/client/heartbeat")
+    def info(self):       return self._post("/api/client/info")
+
+    def login(self):
+        """一步登录：验证 → 未激活自动激活"""
+        r = self.verify()
+        if r.get("code") == 2005:
+            r = self.activate()
+        return r
+
+
+# ========= 使用示例 =========
+def main():
+    key = input("请输入卡密: ").strip()
+    auth = CardAuth(key)
+    print("机器码:", auth.machine)
+
+    r = auth.login()
+    if r["code"] != 0:
+        print(f"验证失败 [{r['code']}]: {r['msg']}")
+        return
+
+    card = r["card"]
+    user = card["user"]
+    print(f"登录成功  类型={card['type_name']}")
+    if card["unit"] == "day":
+        print(f"  剩余 {user['remain_days']} 天，到期 {user['expire_at_text']}")
+    else:
+        print(f"  剩余额度 {user['credit']}")
+
+    # 心跳（实际项目用独立线程）
+    import threading, time as _t
+    def hb():
+        fail = 0
+        while True:
+            _t.sleep(300)
+            res = auth.heartbeat()
+            fail = 0 if res["code"] == 0 else fail + 1
+            if fail >= 3:
+                print("验证掉线，锁定功能"); os._exit(1)
+    threading.Thread(target=hb, daemon=True).start()
+
+    # ---- 你的软件逻辑 ----
+    print("软件已解锁，可以正常使用")
+    input("按回车退出\\n")
+
+if __name__ == "__main__":
+    main()
+\`\`\`
+
+---
+
+## 四、C# / .NET 完整实现
+
+\`\`\`csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Threading.Tasks;
+
+public class CardAuth
+{
+    private const string Base   = "${BASE}";
+    private const string Secret = "${SECRET}";
+    private const string AppId  = "${appId}";
+
+    private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+
+    public string CardKey  { get; set; }
+    public string DeviceId { get; set; }
+    public int    LastCode { get; private set; } = -1;
+    public string LastMsg  { get; private set; } = "";
+
+    public CardAuth(string cardKey, string deviceId = null)
+    {
+        CardKey  = (cardKey ?? "").Trim().ToUpperInvariant();
+        DeviceId = deviceId ?? GenMachineCode();
+    }
+
+    public static string GenMachineCode()
+    {
+        string raw = "";
+        try
+        {
+            using var s = new System.Management.ManagementObjectSearcher(
+                "SELECT UUID FROM Win32_ComputerSystemProduct");
+            foreach (var o in s.Get()) { raw = o["UUID"]?.ToString() ?? ""; if (raw != "") break; }
+        }
+        catch { }
+        if (string.IsNullOrWhiteSpace(raw))
+            raw = Environment.MachineName + "|" + Environment.UserName;
+        using var md5 = MD5.Create();
+        return BitConverter.ToString(md5.ComputeHash(Encoding.UTF8.GetBytes(raw)))
+                           .Replace("-", "").ToUpperInvariant();
+    }
+
+    private static string Hmac(string key, string data)
+    {
+        using var h = new HMACSHA256(Encoding.UTF8.GetBytes(key));
+        return BitConverter.ToString(h.ComputeHash(Encoding.UTF8.GetBytes(data)))
+                           .Replace("-", "").ToLowerInvariant();
+    }
+
+    private static string NormalizeBody(IDictionary<string, object> d)
+    {
+        var skip = new[] { "sign", "timestamp", "nonce", "card_key", "device_id" };
+        var sorted = new SortedDictionary<string, object>(StringComparer.Ordinal);
+        foreach (var kv in d) if (!skip.Contains(kv.Key)) sorted[kv.Key] = kv.Value;
+        var sb = new StringBuilder("{");
+        bool first = true;
+        foreach (var kv in sorted)
+        {
+            if (!first) sb.Append(',');
+            first = false;
+            sb.Append('"').Append(kv.Key).Append("\\":").Append(JsonSerializer.Serialize(kv.Value));
+        }
+        return sb.Append('}').ToString();
+    }
+
+    private async Task<JsonObject> Post(string path, IDictionary<string, object> data = null)
+    {
+        data ??= new Dictionary<string, object>();
+        string ts    = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
+        string nonce = Guid.NewGuid().ToString("N");
+        string bj    = NormalizeBody(data);
+        string sign  = Hmac(Secret, string.Join("|", CardKey, DeviceId, ts, nonce, bj));
+
+        var final = new Dictionary<string, object>(data)
+        {
+            ["card_key"] = CardKey, ["device_id"] = DeviceId,
+            ["timestamp"] = ts, ["nonce"] = nonce, ["sign"] = sign,
+        };
+        var content = new StringContent(JsonSerializer.Serialize(final), Encoding.UTF8, "application/json");
+        var resp = await Http.PostAsync(Base + path, content);
+        var text = await resp.Content.ReadAsStringAsync();
+        var jo = JsonNode.Parse(text) as JsonObject;
+        LastCode = jo?["code"]?.GetValue<int>() ?? -1;
+        LastMsg  = jo?["msg"]?.GetValue<string>() ?? "";
+        return jo;
+    }
+
+    public Task<JsonObject> Activate()  => Post("/api/client/activate");
+    public Task<JsonObject> Verify()    => Post("/api/client/verify");
+    public Task<JsonObject> Heartbeat() => Post("/api/client/heartbeat");
+    public Task<JsonObject> Info()      => Post("/api/client/info");
+
+    public async Task<(bool ok, JsonObject card, string err)> LoginAsync()
+    {
+        var r = await Verify();
+        if (LastCode == 2005) r = await Activate();
+        return LastCode == 0 ? (true, r?["card"] as JsonObject, "") : (false, null, LastMsg);
+    }
+}
+
+// ===== WinForms 用法 =====
+// var auth = new CardAuth(cardKey);
+// var (ok, card, err) = await auth.LoginAsync();
+// if (!ok) { MessageBox.Show("验证失败：" + err); Application.Exit(); return; }
+// var user = card["user"];
+// this.Text = card["unit"].ToString() == "day"
+//     ? $"剩余 {user["remain_days"]} 天"
+//     : $"剩余额度 {user["credit"]}";
+\`\`\`
+
+---
+
+## 五、C++ 关键片段（WinHTTP + BCrypt）
+
+完整代码见 \`examples/CardAuth.cpp\`。核心三件事：
+
+\`\`\`cpp
+// 1) HMAC-SHA256（BCrypt 原生，无需第三方库）
+std::string HmacSha256(const std::string& key, const std::string& data);
+
+// 2) 组装 bodyJson：key 升序、无空格
+//    单参数时形如 {"amount":1}，无参数时 "{}"
+
+// 3) 拼接 payload 并签名
+std::string payload = cardKey + "|" + deviceId + "|" + ts + "|" + nonce + "|" + bodyJson;
+std::string sign    = HmacSha256(API_SECRET, payload);
+\`\`\`
+
+---
+
+## 六、易语言（精易模块）
+
+\`\`\`
+.子程序 验证卡密, 逻辑型
+.参数 卡密, 文本型
+.局部变量 时间戳, 文本型
+.局部变量 随机串, 文本型
+.局部变量 待签, 文本型
+.局部变量 签名, 文本型
+.局部变量 提交, 文本型
+.局部变量 响应, 文本型
+
+全局_卡密 ＝ 到大写 (删首尾空 (卡密))
+全局_机器码 ＝ 取机器码 ()
+
+时间戳 ＝ 到文本 (系统_取Unix时间戳毫秒 ())
+随机串 ＝ 取随机字符 (16)
+待签   ＝ 全局_卡密 ＋ "|" ＋ 全局_机器码 ＋ "|" ＋ 时间戳 ＋ "|" ＋ 随机串 ＋ "|{}"
+签名   ＝ 到小写 (校验_HMAC_SHA256 (到字节集 (#通信密钥), 到字节集 (待签)))
+
+提交 ＝ "{#引号card_key#引号:#引号" ＋ 全局_卡密 ＋ "#引号,"
+提交 ＝ 提交 ＋ "#引号device_id#引号:#引号" ＋ 全局_机器码 ＋ "#引号,"
+提交 ＝ 提交 ＋ "#引号timestamp#引号:#引号" ＋ 时间戳 ＋ "#引号,"
+提交 ＝ 提交 ＋ "#引号nonce#引号:#引号" ＋ 随机串 ＋ "#引号,"
+提交 ＝ 提交 ＋ "#引号sign#引号:#引号" ＋ 签名 ＋ "#引号}"
+
+响应 ＝ 到文本 (网页_访问_对象 (#服务器地址 ＋ "/api/client/verify", 1,
+        到字节集 (提交), , , "Content-Type: application/json"))
+
+' 未激活(2005)时自动激活
+.如果真 (取JSON整数 (响应, "code") ＝ 2005)
+    响应 ＝ 到文本 (网页_访问_对象 (#服务器地址 ＋ "/api/client/activate", 1,
+            到字节集 (提交), , , "Content-Type: application/json"))
+.如果真结束
+
+返回 (取JSON整数 (响应, "code") ＝ 0)
+\`\`\`
+
+> 易语言没有内置 HMAC-SHA256，用「精易模块」的 \`校验_HMAC\`，
+> 或编译一个 bcrypt 封装 DLL（源码见 \`examples/CardAuth.cpp\` 里的注释）。
+
+---
+
+## 七、服务端验证流程图（防破解要点）
+
+| 阶段 | 做什么 | 为什么 |
+|---|---|---|
+| 启动 | \`/verify\` | 基础门槛 |
+| 进入后 | 300 秒 \`/heartbeat\` | 掉线即锁，补丁跳过启动验证也没用 |
+| 关键功能前 | 检查内存标志位 + 偶尔重新 \`/verify\` | 防"启动后打补丁" |
+| 到期判断 | 只用服务端返回的 \`expire_at\` | 不信任本机时间 |
+| 密钥存储 | 字符串拆分/异或混淆，运行时还原 | 反编译搜不到明文 |
+
+**不要写的代码：**
+
+\`\`\`csharp
+// ❌ 错误：只判断成功分支，破解者改成永远为真就绕过了
+if (verifyOk) { RunSoftware(); }
+
+// ✅ 正确：有明确失败分支，且核心逻辑放在验证后解锁的数据里
+if (!verifyOk) { ShowError(); Environment.Exit(1); }
+else { RunSoftware(); }
+\`\`\`
+`;
+
+/* ---------- ② 额度充值对接 ---------- */
+DOC_BUILDERS.credit = ({ BASE, SECRET, appId, appName }) => `# ${appName} · 额度充值对接文档
+
+> 适用场景：**按用量计费的软件**。用户先充额度，每次使用扣额度，用完再充。
+> 和时长卡的区别：时长卡是"包月无限用"，额度卡是"用多少扣多少"。
+
+- 应用标识：\`${appId}\`
+- 服务器地址：\`${BASE}\`
+- 通信密钥：\`${SECRET}\`
+
+---
+
+## 一、额度卡的两种用法
+
+### 用法 A：直接激活（新用户首次）
+
+用户拿到一张额度卡，直接当"账号"激活：
+
+\`\`\`
+activate(额度卡号) → 账户创建，额度到账
+\`\`\`
+
+### 用法 B：给已有账号充值（老用户续费）
+
+用户已有账号（比如是月卡用户），再买额度卡充值：
+
+\`\`\`
+账号A（已有） + 额度卡B → 充值接口 → 额度累加到 A
+\`\`\`
+
+**两者区别**：A 是"开新户"，B 是"给老户加钱"。后台「用户额度」页面能看到每个人的余额。
+
+---
+
+## 二、额度扣费模式（三选一）
+
+| 模式 | 实现 | 适合 |
+|---|---|---|
+| **预扣** | 功能开始前先 \`consume\`，失败就拒绝 | 执行时间短的操作（导出、查询） |
+| **后扣** | 功能完成后 \`consume\` | 执行时间长、可能失败的操作 |
+| **定时扣** | 每 N 分钟扣一次 | 挂机类、时长类 |
+
+**推荐预扣**：能防止用户额度不足却消耗了资源。
+
+---
+
+## 三、完整对接代码（Python）
+
+\`\`\`python
+import json, time, hmac, hashlib, uuid
+import requests
+
+BASE   = "${BASE}"
+SECRET = "${SECRET}"
+APP_ID = "${appId}"
+
+class CreditAuth:
+    def __init__(self, card_key, device_id):
+        self.card_key = card_key.strip().upper()
+        self.machine  = device_id
+        self.s        = requests.Session()
+
+    def _post(self, path, data=None):
+        body  = dict(data or {})
+        ts    = str(int(time.time() * 1000))
+        nonce = uuid.uuid4().hex
+        clean = {k: v for k, v in body.items()
+                 if k not in ("sign", "timestamp", "nonce", "card_key", "device_id")}
+        bj    = json.dumps(clean, separators=(",", ":"), sort_keys=True)
+        sign  = hmac.new(SECRET.encode(),
+                         "|".join([self.card_key, self.machine, ts, nonce, bj]).encode(),
+                         hashlib.sha256).hexdigest()
+        body.update({"card_key": self.card_key, "device_id": self.machine,
+                     "timestamp": ts, "nonce": nonce, "sign": sign})
+        return self.s.post(BASE + path, json=body, timeout=10).json()
+
+    # ---- 账户 ----
+    def info(self):
+        """查余额：返回 card.user.credit"""
+        return self._post("/api/client/info")
+
+    def activate_credit_card(self):
+        """用法A：把额度卡当账号激活"""
+        return self._post("/api/client/activate")
+
+    # ---- 充值 ----
+    def recharge(self, credit_card_key):
+        """用法B：用额度卡给人充值"""
+        return self._post("/api/client/redeem", {
+            "redeem_key": credit_card_key.strip().upper()
+        })
+
+    # ---- 扣费 ----
+    def consume(self, amount, remark=""):
+        return self._post("/api/client/consume", {
+            "amount": int(amount), "remark": remark
+        })
+
+    # ---- 便捷：带余额检查的扣费 ----
+    def charge_or_raise(self, amount, remark=""):
+        r = self.consume(amount, remark)
+        if r["code"] == 2008:
+            raise RuntimeError(f"额度不足，当前 {r.get('balance', 0)}")
+        if r["code"] != 0:
+            raise RuntimeError(f"扣费失败: {r['msg']}")
+        return r["balance"]
+
+
+# ================== 实际使用 ==================
+if __name__ == "__main__":
+    auth = CreditAuth("ABCD-EFGH-IJKL-MNOP", "MY-PC-001")
+
+    # 1) 先查余额
+    info = auth.info()
+    if info["code"] != 0:
+        print("账号无效:", info["msg"]); raise SystemExit(1)
+    print("当前余额:", info["card"]["user"]["credit"])
+
+    # 2) 余额不足则充值
+    if info["card"]["user"]["credit"] < 10:
+        card = input("余额不足，请输入额度卡: ").strip()
+        r = auth.recharge(card)
+        if r["code"] == 0:
+            print(f"充值成功 +{r['add']}，当前余额 {r['balance']}")
+        else:
+            print("充值失败:", r["msg"]); raise SystemExit(1)
+
+    # 3) 执行功能前预扣
+    try:
+        left = auth.charge_or_raise(1, "导出报表")
+        print(f"扣费 1，剩余 {left}")
+    except RuntimeError as e:
+        print(e); raise SystemExit(1)
+
+    # 4) 执行你的真实业务
+    print("正在导出报表...")
+\`\`\`
+
+---
+
+## 四、C# 充值部分
+
+\`\`\`csharp
+// 查余额
+var info = await auth.Info();
+int credit = info?["card"]?["user"]?["credit"]?.GetValue<int>() ?? 0;
+labelBalance.Text = $"余额：{credit}";
+
+// 充值
+var r = await auth.Redeem(creditCardKey);   // 见原版文档的 Post 方法
+if (auth.LastCode == 0)
+    MessageBox.Show($"充值成功 +{r["add"]}，当前 {r["balance"]}");
+else if (auth.LastCode == 2002)
+    MessageBox.Show("这张充值卡已经被用过了");
+else
+    MessageBox.Show("充值失败：" + auth.LastMsg);
+
+// 扣费
+var c = await auth.Consume(1, "导出功能");
+if (auth.LastCode == 2008)
+{
+    MessageBox.Show("额度不足，请充值后再使用");
+    return;
+}
+if (auth.LastCode != 0) { MessageBox.Show(c?["msg"]?.GetValue<string>()); return; }
+
+// 继续业务
+\`\`\`
+
+其中 \`Redeem\` / \`Consume\` 的实现：
+
+\`\`\`csharp
+public Task<JsonObject> Redeem(string creditCard)
+    => Post("/api/client/redeem", new Dictionary<string, object>
+       { ["redeem_key"] = creditCard.Trim().ToUpperInvariant() });
+
+public Task<JsonObject> Consume(int amount, string remark = "")
+    => Post("/api/client/consume", new Dictionary<string, object>
+       { ["amount"] = amount, ["remark"] = remark });
+\`\`\`
+
+---
+
+## 五、易语言 充值部分
+
+\`\`\`
+.子程序 充值额度, 逻辑型
+.参数 额度卡号, 文本型
+.局部变量 提交, 文本型
+.局部变量 响应, 文本型
+
+提交 ＝ "{#引号redeem_key#引号:#引号" ＋ 到大写 (删首尾空 (额度卡号)) ＋ "#引号}"
+响应 ＝ 发送请求 ("/api/client/redeem", 提交)
+
+.如果 (取JSON整数 (响应, "code") ＝ 0)
+    信息框 ("充值成功，当前额度：" ＋ 取JSON文本 (响应, "balance"), 0, "提示")
+    返回 (真)
+.否则
+    信息框 ("充值失败：" ＋ 取JSON文本 (响应, "msg"), 0, "错误")
+    返回 (假)
+.如果结束
+
+.子程序 消耗额度, 逻辑型
+.参数 数量, 整数型
+.局部变量 提交, 文本型
+.局部变量 响应, 文本型
+
+提交 ＝ "{#引号amount#引号:" ＋ 到文本 (数量) ＋ "}"
+响应 ＝ 发送请求 ("/api/client/consume", 提交)
+
+.如果真 (取JSON整数 (响应, "code") ＝ 2008)
+    信息框 ("额度不足，请充值", 0, "提示")
+    返回 (假)
+.如果真结束
+返回 (取JSON整数 (响应, "code") ＝ 0)
+\`\`\`
+
+---
+
+## 六、充值与扣费接口说明
+
+### 充值 \`POST /api/client/redeem\`
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| \`card_key\` | string | **你自己的账号卡密**（接收额度的一方） |
+| \`redeem_key\` | string | 充值卡（额度卡）的卡号 |
+| \`device_id\` | string | 机器码 |
+
+返回：
+\`\`\`json
+{ "code": 0, "msg": "充值成功，增加 50 额度", "add": 50, "balance": 120 }
+\`\`\`
+
+常见错误：\`2002\` 充值卡已被使用 / \`2001\` 充值卡不存在 / \`1005\` 用了时长卡充值
+
+### 扣费 \`POST /api/client/consume\`
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| \`card_key\` | string | 账号卡密 |
+| \`amount\` | int | 扣多少额度（默认 1） |
+| \`remark\` | string | 备注，会记入流水 |
+
+返回：
+\`\`\`json
+{ "code": 0, "msg": "扣费成功", "balance": 119, "cost": 1 }
+\`\`\`
+
+额度不足返回 \`2008\`，附带当前余额。
+
+---
+
+## 七、后台如何查看
+
+- **用户额度**：每个人的剩余额度、累计充值、已消耗、是否 VIP
+- **后台可手动调整**：点「改额度」，正数加、负数扣，都会记流水
+- **流水记录**：API 里 \`/api/admin/credits-log\`，每笔充值扣费都有来源和备注
+
+---
+
+## 八、注意事项
+
+1. **充值卡不能是时长卡**，用了会返回 1005
+2. **同一个充值卡不能重复使用**，第二次返回 2002
+3. **扣费要幂等考虑**：网络超时可能导致客户端以为失败但服务端已扣，
+   建议在 \`remark\` 里带业务单号，出问题能对账
+4. **额度倍率**：后台「系统设置 → 额度换算倍率」可设 1 张 10 额度卡 = 多少额度
+`;
+
+/* ---------- ③ 破解版对接 ---------- */
+DOC_BUILDERS.crack = ({ BASE, SECRET, appId, appName }) => `# ${appName} · 破解版对接文档
+
+> ⚠️ 重要说明：这里说的"破解版对接"，是指**把卡密验证接入到你已经破解/汉化/修改过的第三方软件**中，
+> 让你的破解版软件也能有卡密授权体系。不是说帮别人破解你的软件。
+
+- 应用标识：\`${appId}\`
+- 服务器地址：\`${BASE}\`
+- 通信密钥：\`${SECRET}\`
+
+---
+
+## 一、破解版接入的三种方式
+
+### 方式 1：DLL 劫持注入（最通用）
+
+把自己的验证 DLL 伪装成原软件依赖的某个系统 DLL，软件启动时自动加载你的验证逻辑。
+
+**步骤：**
+
+1. 用 Process Monitor / Dependency Walker 查原软件加载了哪些 DLL
+2. 挑一个加载失败的（比如缺 \`version.dll\`、\`winmm.dll\`）
+3. 自己编译同名 DLL，导出原 DLL 的所有函数（转发到系统同名 DLL）
+4. 在 \`DllMain\` 的 \`DLL_PROCESS_ATTACH\` 里启动验证线程
+5. 验证失败就 \`TerminateProcess\` 或让功能失效
+
+**劫持 DLL 模板（C++）：**
+
+\`\`\`cpp
+// 伪装 version.dll
+#include <windows.h>
+#include <string>
+
+// 转发到系统真实 DLL
+#pragma comment(linker, "/export:GetFileVersionInfoA=C:\\\\Windows\\\\System32\\\\version.GetFileVersionInfoA")
+#pragma comment(linker, "/export:GetFileVersionInfoW=C:\\\\Windows\\\\System32\\\\version.GetFileVersionInfoW")
+#pragma comment(linker, "/export:GetFileVersionInfoSizeA=C:\\\\Windows\\\\System32\\\\version.GetFileVersionInfoSizeA")
+#pragma comment(linker, "/export:GetFileVersionInfoSizeW=C:\\\\Windows\\\\System32\\\\version.GetFileVersionInfoSizeW")
+#pragma comment(linker, "/export:VerQueryValueA=C:\\\\Windows\\\\System32\\\\version.VerQueryValueA")
+#pragma comment(linker, "/export:VerQueryValueW=C:\\\\Windows\\\\System32\\\\version.VerQueryValueW")
+
+DWORD WINAPI VerifyThread(LPVOID) {
+    // 这里调用卡密验证接口
+    if (!CardVerify()) {
+        MessageBoxW(NULL, L"请先输入有效卡密", L"提示", MB_ICONERROR);
+        // 直接结束宿主进程
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
+    return 0;
+}
+
+BOOL APIENTRY DllMain(HMODULE h, DWORD reason, LPVOID) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(h);
+        CreateThread(NULL, 0, VerifyThread, NULL, 0, NULL);
+    }
+    return TRUE;
+}
+\`\`\`
+
+> 编译：\`cl /LD version.cpp\`，生成 \`version.dll\`，放到原软件目录。
+
+### 方式 2：启动器模式（最安全，推荐）
+
+不改原软件的 exe，而是自己写一个"启动器"。用户点启动器 → 验证卡密 → 通过后再启动目标程序。
+
+**优点**：不碰原程序，不破坏数字签名，升级也方便。
+**缺点**：用户能绕过启动器直接点原 exe，所以需要配合下面"进程监控"。
+
+\`\`\`python
+# 启动器示例
+import subprocess, sys, psutil
+from cardauth import CardAuth
+
+TARGET = r"C:\\Program Files\\TargetApp\\app.exe"
+
+def main():
+    key = input("请输入卡密: ").strip()
+    auth = CardAuth(key)
+    r = auth.login()
+    if r["code"] != 0:
+        print("验证失败:", r["msg"]); sys.exit(1)
+
+    print(f"验证通过，剩余 {r['card']['user'].get('remain_days', '无限')} 天")
+    proc = subprocess.Popen([TARGET])
+
+    # 监控进程，同时保持心跳
+    import threading, time
+    def heartbeat():
+        fail = 0
+        while proc.poll() is None:
+            time.sleep(300)
+            hb = auth.heartbeat()
+            fail = 0 if hb["code"] == 0 else fail + 1
+            if fail >= 3:
+                proc.terminate()
+                print("验证掉线，已关闭程序")
+                return
+    threading.Thread(target=heartbeat, daemon=True).start()
+    proc.wait()
+
+if __name__ == "__main__":
+    main()
+\`\`\`
+
+### 方式 3：进程守护联动
+
+启动器启动后，轮询系统进程，发现目标程序在跑但启动器不在（说明用户直接点原 exe），就干掉它。
+
+\`\`\`python
+import psutil, time, os
+
+def guard(target_name="app.exe", launcher_pid=None):
+    while True:
+        time.sleep(2)
+        for p in psutil.process_iter(["name", "pid"]):
+            if p.info["name"] == target_name and p.info["pid"] != launcher_pid:
+                # 检查是否有本启动器在运行
+                if not has_launcher_running():
+                    try: p.kill()
+                    except: pass
+\`\`\`
+
+---
+
+## 二、破解版接入的验证逻辑（关键）
+
+破解版最怕的是**别人再破解你的破解版**。所以验证要更狠：
+
+### 1. 内存标志位 + 多线程交叉校验
+
+不要用一个全局变量 \`isVip\`，破解者一搜就找到。
+
+\`\`\`cpp
+// 不好的写法
+bool g_verified = false;
+if (g_verified) { DoWork(); }   // 破解者搜 g_verified，改成 true 就完事
+
+// 好的写法：把验证结果藏进已有的数据结构，或者用多个变量交叉验证
+struct License {
+    int  checksum1;
+    int  checksum2;
+    long expireTime;
+};
+// 校验时同时检查 3 个值是否自洽，改一个就对不上
+\`\`\`
+
+### 2. 服务端下发关键数据
+
+不要只让服务端返回"通过/不通过"，让服务端返回**业务必需的数据**（比如解密密钥、参数表）。
+没通过验证拿不到这些数据，软件本身就是残缺的，补丁也没用。
+
+### 3. 定期强制重新验证
+
+不要只在启动时验证。每 5~10 分钟重新调 \`/verify\`，连续失败就退出。
+破解者常用的"启动后打补丁"就失效了。
+
+### 4. 密钥混淆
+
+\`\`\`cpp
+// 不要写明文
+const char* SECRET = "abc123def456";
+
+// 拆开 + 运行时还原
+char s1[] = {0x61,0x62,0x63};           // abc
+char s2[] = {0x31,0x32,0x33};           // 123
+std::string secret = std::string(s1,3) + std::string(s2,3);
+\`\`\`
+
+### 5. 反调试
+
+\`\`\`cpp
+#include <windows.h>
+
+bool AntiDebug() {
+    if (IsDebuggerPresent()) return true;
+    BOOL remote = FALSE;
+    CheckRemoteDebuggerPresent(GetCurrentProcess(), &remote);
+    if (remote) return true;
+
+    // 检查 PEB.BeingDebugged
+    #ifdef _WIN64
+    auto peb = (PEB*)__readgsqword(0x60);
+    #else
+    auto peb = (PEB*)__readfsdword(0x30);
+    #endif
+    if (peb->BeingDebugged) return true;
+
+    return false;
+}
+\`\`\`
+
+检测到调试就拒绝运行，或触发验证失败分支。
+
+---
+
+## 三、DLL 注入版验证代码模板
+
+\`\`\`cpp
+// CardAuthDll.cpp — 注入到目标进程后的验证逻辑
+#include <windows.h>
+#include <winhttp.h>
+#include <bcrypt.h>
+#include <string>
+#pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "bcrypt.lib")
+
+// ↓ 换成你自己的（用混淆方式存，别写明文）
+static std::string GetServer() { return "${BASE}"; }
+static std::string GetSecret() { return "${SECRET}"; }
+static std::string GetAppId()  { return "${appId}"; }
+
+static std::string HmacSha256(const std::string& key, const std::string& data) {
+    BCRYPT_ALG_HANDLE hAlg; BCRYPT_HASH_HANDLE hHash;
+    DWORD cbHash = 0, cbData = 0;
+    BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL,
+        BCRYPT_ALG_HANDLE_HMAC_FLAG);
+    BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PUCHAR)&cbHash,
+        sizeof(cbHash), &cbData, 0);
+    std::vector<BYTE> hash(cbHash);
+    BCryptCreateHash(hAlg, &hHash, NULL, 0, (PUCHAR)key.c_str(),
+        (ULONG)key.size(), 0);
+    BCryptHashData(hHash, (PUCHAR)data.c_str(), (ULONG)data.size(), 0);
+    BCryptFinishHash(hHash, hash.data(), cbHash, 0);
+    std::string hex, tmp(3, 0);
+    for (DWORD i = 0; i < cbHash; i++) {
+        sprintf_s(&tmp[0], 3, "%02x", hash[i]);
+        hex += tmp;
+    }
+    BCryptDestroyHash(hHash);
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+    return hex;
+}
+
+// 从配置文件读取用户卡密（你的启动器写进去的）
+static std::string LoadCardKey() {
+    char path[MAX_PATH];
+    GetModuleFileNameA(NULL, path, MAX_PATH);
+    std::string dir(path);
+    dir = dir.substr(0, dir.find_last_of("\\\\"));
+    std::string file = dir + "\\\\license.dat";
+    FILE* f = fopen(file.c_str(), "rb");
+    if (!f) return "";
+    char buf[128] = {0};
+    fread(buf, 1, 127, f);
+    fclose(f);
+    return buf;
+}
+
+static bool VerifyFromServer() {
+    std::string card = LoadCardKey();
+    if (card.empty()) return false;
+
+    // ... 组装请求、签名、发 HTTP（同原版文档）
+    // 返回 code == 0 则通过
+    return true;
+}
+
+DWORD WINAPI VerifyLoop(LPVOID) {
+    if (!VerifyFromServer()) {
+        MessageBoxW(NULL, L"卡密无效，请联系客服", L"授权失败", MB_ICONERROR);
+        TerminateProcess(GetCurrentProcess(), 0);
+        return 0;
+    }
+    // 每 5 分钟重新验证
+    while (true) {
+        Sleep(300000);
+        if (!VerifyFromServer()) {
+            MessageBoxW(NULL, L"授权已失效", L"提示", MB_ICONWARNING);
+            TerminateProcess(GetCurrentProcess(), 0);
+            return 0;
+        }
+    }
+    return 0;
+}
+\`\`\`
+
+---
+
+## 四、易语言破解版对接
+
+\`\`\`
+' 方式：把验证写进 DLL，用劫持法注入
+' 或者更简单：写个启动器（推荐）
+
+.子程序 __启动窗口_创建完毕
+.局部变量 卡密, 文本型
+
+.如果真 (读配置项 (取运行目录 () ＋ "\\config.ini", "auth", "card", ) ≠ "")
+    卡密 ＝ 读配置项 (取运行目录 () ＋ "\\config.ini", "auth", "card", )
+.否则
+    卡密 ＝ 输入框 ("请输入卡密", "授权验证", , , , , , , )
+.如果真结束
+
+.如果真 (验证卡密 (卡密) ＝ 假)
+    信息框 ("卡密无效，程序将退出", 0, "提示")
+    结束 ()
+.如果真结束
+
+写配置项 (取运行目录 () ＋ "\\config.ini", "auth", "card", 卡密)
+
+' 启动目标程序
+运行 (取运行目录 () ＋ "\\目标程序.exe", 假, )
+
+' 启动心跳定时器（时钟周期 = 300000 毫秒）
+时钟1.时钟周期 ＝ 300000
+\`\`\`
+
+---
+
+## 五、破解版接入检查清单
+
+上线前自查：
+
+- [ ] 验证不是只在启动时做一次
+- [ ] 心跳失败会真正锁定功能（不是只弹窗）
+- [ ] 密钥没有明文写在代码里
+- [ ] 关键业务数据从服务端拉，不是本地写死
+- [ ] 有反调试检测
+- [ ] 用户能直接双击原 exe 绕过启动器（如果用了启动器，需加进程守护）
+- [ ] 卡密和设备绑定，换机要解绑
+- [ ] 后台能一键封禁被盗用的卡
+
+---
+
+## 六、常见问题
+
+**Q: 注入后原软件崩溃？**
+A: 多半是 DLL 导出函数没转发全。用 \`dumpbin /exports 原dll\` 看完整导出列表，
+确保你的 DLL 导出了所有同名函数并转发到系统原 DLL。
+
+**Q: 软件更新后注入失效？**
+A: 更新可能改了 DLL 依赖列表。重新用 Process Monitor 看一眼，换一个被加载的 DLL 劫持。
+
+**Q: 用户反映杀毒报毒？**
+A: DLL 注入本身敏感。建议改用「启动器 + 进程守护」方式，或者给 DLL 申请数字签名。
+
+**Q: 怎么防止别人拿你的破解版再破解？**
+A: 核心是"服务端下发关键数据"，没验证就拿不到能用的数据。这比任何本地加密都有效。
+`;
+
+/* ---------- ④ 快速开始 ---------- */
+DOC_BUILDERS.quick = ({ BASE, SECRET, appId, appName }) => `# ${appName} · 快速开始
+
+## 第一步：确认你的三样东西
+
+| 项目 | 值 |
+|---|---|
+| 服务器地址 | \`${BASE}\` |
+| 应用标识 | \`${appId}\` |
+| 通信密钥 | \`${SECRET}\` |
+
+⚠️ 换应用就要换密钥。**不同应用的卡密互不通用。**
+
+---
+
+## 第二步：选对接方式
+
+| 你的情况 | 看哪份文档 |
+|---|---|
+| 自己的软件，用户输卡密才能用 | **① 原版对接** |
+| 按用量收费，先充额度再扣 | **② 额度充值对接** |
+| 把验证接到破解/汉化的第三方软件 | **③ 破解版对接** |
+
+---
+
+## 第三步：最小可运行示例（Python）
+
+复制下面的代码，改两个值就能跑：
+
+\`\`\`python
+import json, time, hmac, hashlib, uuid, requests
+
+BASE   = "${BASE}"
+SECRET = "${SECRET}"
+
+def call(path, card_key, device_id, data=None):
+    body  = dict(data or {})
+    ts    = str(int(time.time() * 1000))
+    nonce = uuid.uuid4().hex
+    clean = {k: v for k, v in body.items()
+             if k not in ("sign","timestamp","nonce","card_key","device_id")}
+    bj    = json.dumps(clean, separators=(",", ":"), sort_keys=True)
+    sign  = hmac.new(SECRET.encode(),
+                     "|".join([card_key, device_id, ts, nonce, bj]).encode(),
+                     hashlib.sha256).hexdigest()
+    body.update({"card_key": card_key, "device_id": device_id,
+                 "timestamp": ts, "nonce": nonce, "sign": sign})
+    return requests.post(BASE + path, json=body, timeout=10).json()
+
+# 测试
+r = call("/api/client/verify", "你的卡密", "TEST-DEVICE-001")
+print(r)
+\`\`\`
+
+看到 \`{"code": 0, ...}\` 就说明通了。
+
+---
+
+## 第四步：常见问题
+
+**代码 1002 签名失败？**
+- 检查密钥和后台是否一致
+- 检查 bodyJson 是否 key 升序、无空格
+- 检查 timestamp 是否 13 位毫秒
+
+**代码 1004 时间偏差？**
+- 本机时间不准，对一下网络时间
+
+**代码 2007 设备超限？**
+- 后台「卡密管理」搜到这张卡，点「解绑」
+
+**想先关闭签名调试？**
+- 后台「系统设置」→ 接口签名校验 → 关闭（调通后记得开回来）
+`;
+
+/* ---------- ⑤ 接口与错误码 ---------- */
+DOC_BUILDERS.api = ({ BASE, SECRET, appId, appName }) => `# ${appName} · 接口清单与错误码
+
+服务器：\`${BASE}\`
+应用：\`${appId}\`
+
+---
+
+## 一、客户端接口
+
+| 方法 | 路径 | 说明 | 需签名 |
+|---|---|---|---|
+| POST | \`/api/client/activate\` | 激活卡密（时长卡加时长 / 额度卡加额度） | ✅ |
+| POST | \`/api/client/verify\` | 验证卡密（每次启动调用） | ✅ |
+| POST | \`/api/client/heartbeat\` | 心跳保活（建议 300 秒） | ✅ |
+| POST | \`/api/client/redeem\` | 用额度卡充值 | ✅ |
+| POST | \`/api/client/consume\` | 消耗额度 | ✅ |
+| POST | \`/api/client/info\` | 查询账户信息 | ✅ |
+| GET | \`/api/client/config?app_id=${appId}\` | 拉配置（卡类型/心跳间隔/版本） | ❌ |
+| GET | \`/api/client/notice?app_id=${appId}\` | 公告与版本 | ❌ |
+| GET | \`/api/client/time\` | 服务器时间（校时） | ❌ |
+| GET | \`/health\` | 健康检查 | ❌ |
+
+---
+
+## 二、返回结构
+
+\`\`\`json
+{
+  "code": 0,
+  "msg": "验证通过",
+  "card": {
+    "card_key": "ABCD-EFGH-IJKL-MNOP",
+    "type_code": "month",
+    "type_name": "月卡",
+    "unit": "day",
+    "value": 30,
+    "status": "used",
+    "expire_at": 1798000000000,
+    "expire_at_text": "2026-12-24 11:34:58",
+    "remain_days": 30,
+    "max_devices": 1,
+    "devices": [{ "device_id": "XXX", "first_seen": 0, "last_seen": 0 }],
+    "user": {
+      "credit": 0,
+      "total_credit": 0,
+      "used_credit": 0,
+      "expire_at": 1798000000000,
+      "expire_at_text": "2026-12-24 11:34:58",
+      "remain_days": 30,
+      "is_vip": true,
+      "ban": 0
+    }
+  }
+}
+\`\`\`
+
+**判断依据：**
+- 时长卡看 \`card.unit === "day"\` 和 \`card.user.remain_days\`
+- 额度卡看 \`card.user.credit\`
+
+---
+
+## 三、错误码全表
+
+### 通用
+
+| code | 含义 | 客户端处理 |
+|---|---|---|
+| 0 | 成功 | 放行 |
+| 1001 | 参数错误 | 检查必填项 |
+| 1002 | 签名错误 | 检查密钥与算法 |
+| 1003 | 重复请求（nonce 用过） | 换 nonce 重试 |
+| 1004 | 时间戳偏差过大 | 校准本机时间 |
+| 9001 | 服务端异常 | 稍后重试 |
+| 9003 | 请求过于频繁 | 降频 |
+
+### 卡密相关
+
+| code | 含义 | 客户端处理 |
+|---|---|---|
+| 2001 | 卡密不存在 | 提示核对 |
+| 2002 | 卡密已被使用 | 提示或引导激活 |
+| 2003 | 卡密已被封禁 | 禁止使用 |
+| 2004 | 卡密已过期 | 提示续费 |
+| 2005 | 卡密未激活 | 调 activate |
+| 2006 | 设备不匹配 | 提示联系客服 |
+| 2007 | 绑定设备数超限 | 提示解绑 |
+| 2008 | 额度不足 | 提示充值 |
+
+### 应用与类型
+
+| code | 含义 |
+|---|---|
+| 3001 | 卡类型不存在或已禁用 |
+| 3002 | 卡类型已停用 |
+| 3100 | 应用不存在或已停用 |
+
+### 代理
+
+| code | 含义 |
+|---|---|
+| 4001 | 代理不存在 |
+| 4002 | 代理已冻结 |
+| 4003 | 代理余额不足 |
+| 4004 | 代理密码错误 |
+
+### 用户
+
+| code | 含义 |
+|---|---|
+| 5001 | 用户已被封禁 |
+
+---
+
+## 四、签名算法参考实现
+
+\`\`\`python
+def sign_url(secret, card_key, device_id, body_json):
+    ts    = str(int(time.time() * 1000))
+    nonce = uuid.uuid4().hex
+    payload = "|".join([card_key, device_id, ts, nonce, body_json])
+    sign = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return ts, nonce, sign
+\`\`\`
+
+\`\`\`javascript
+function signUrl(secret, cardKey, deviceId, bodyJson) {
+  const crypto = require('crypto');
+  const ts = Date.now().toString();
+  const nonce = crypto.randomBytes(8).toString('hex');
+  const payload = [cardKey, deviceId, ts, nonce, bodyJson].join('|');
+  const sign = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+  return { ts, nonce, sign };
+}
+\`\`\`
+
+\`\`\`csharp
+public static (string ts, string nonce, string sign) Sign(
+    string secret, string cardKey, string deviceId, string bodyJson)
+{
+    string ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
+    string nonce = Guid.NewGuid().ToString("N");
+    string payload = string.Join("|", cardKey, deviceId, ts, nonce, bodyJson);
+    using var h = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+    string sign = BitConverter.ToString(
+        h.ComputeHash(Encoding.UTF8.GetBytes(payload))).Replace("-", "").ToLowerInvariant();
+    return (ts, nonce, sign);
+}
+\`\`\`
+
+---
+
+## 五、多应用说明
+
+如果你有多个软件共用一个后台：
+
+1. 后台「应用管理」→ 新增应用 → 每个软件一个 \`app_id\`
+2. 每个应用有自己的 \`secret\`（在应用管理里点「密钥」查看）
+3. 客户端对接时：
+   - 用自己应用的 \`secret\` 做签名
+   - 拉配置时带 \`?app_id=你的应用\`
+4. 卡密在哪个应用生成就只能在该应用用，跨应用会返回 3001
+
+**为什么要分应用？**
+- 一个应用的密钥泄露不影响其他应用
+- 各应用卡密池独立，好统计好管理
+- 可以给不同应用设不同版本号、公告、下载地址
+`;
+
+
+/* 初始化 */
+boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+{
+  "name": "cardauth",
+  "version": "1.0.0",
+  "description": "卡密验证系统 - 卡密/额度/天周月卡/代理/服务端验证",
+  "main": "server/app.js",
+  "type": "commonjs",
+  "bin": "server/app.js",
+  "scripts": {
+    "start": "node server/app.js",
+    "dev": "node server/app.js",
+    "test": "node test/e2e.js",
+    "build:win": "pkg . --targets node18-win-x64 --output dist/cardauth.exe --compress GZip",
+    "build:linux": "pkg . --targets node18-linux-x64 --output dist/cardauth-linux --compress GZip"
+  },
+  "pkg": {
+    "scripts": [
+      "server/*.js"
+    ],
+    "assets": [
+      "public/**/*",
+      "node_modules/sql.js/dist/sql-wasm.wasm",
+      "node_modules/sql.js/dist/sql-wasm.js"
+    ],
+    "outputPath": "dist"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "jsonwebtoken": "^9.0.2",
+    "localtunnel": "^2.0.2",
+    "sql.js": "^1.10.3"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.3.0"
+  },
+  "devDependencies": {
+    "jsdom": "^31.0.1",
+    "pkg": "^5.8.1",
+    "playwright": "^1.65.1",
+    "wrangler": "^4.167.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
