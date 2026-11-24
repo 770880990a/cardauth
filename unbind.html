@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#2f6bff">
+<title>释然团队 · 卡密自助解绑</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .cont{max-width:640px;margin:0 auto;padding:18px 16px 50px}
+  .hero{padding:24px 22px;border-radius:16px;margin-bottom:16px;color:#fff;
+    background:linear-gradient(135deg,#f79009 0%,#f04438 100%);position:relative;overflow:hidden}
+  .hero h2{font-size:19px;font-weight:650;margin-bottom:4px}
+  .hero p{font-size:13px;opacity:.9}
+  .hero::after{content:"";position:absolute;right:-40px;top:-40px;width:150px;height:150px;
+    border-radius:50%;background:rgba(255,255,255,.12)}
+  .dev{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px;
+    margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:12px}
+  .dev .info{flex:1;min-width:0}
+  .dev .id{font-family:ui-monospace,monospace;font-size:12.5px;word-break:break-all;margin-bottom:4px}
+  .dev .meta{font-size:11.5px;color:var(--dim)}
+  .kv{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f1f3f7;font-size:13.5px}
+  .kv:last-child{border:none}
+  .kv .k{color:var(--dim)}
+  .kv .v{font-weight:500;text-align:right}
+</style>
+</head>
+<body>
+<div class="cont">
+  <div class="hero">
+    <h2>释然团队 · 卡密自助解绑</h2>
+    <p>换电脑/手机后，先把旧设备解绑，才能在新设备上使用</p>
+  </div>
+
+  <!-- 第一步：输入卡密 -->
+  <div id="step1">
+    <div class="card"><div class="bd">
+      <div class="f" style="margin-bottom:12px"><label>输入你的卡密</label>
+        <input id="cardKey" placeholder="ABCD-EFGH-IJKL-MNOP" autocapitalize="characters"
+          style="font-family:ui-monospace,monospace;letter-spacing:1px;font-size:16px;text-align:center"></div>
+      <button class="btn" style="width:100%" id="queryBtn">查询已绑定设备</button>
+      <div class="hint" style="text-align:center;margin-top:12px">
+        解绑后该设备立即失效，请确认确实是换机再操作
+      </div>
+    </div></div>
+  </div>
+
+  <!-- 第二步：显示设备列表 -->
+  <div id="step2" style="display:none">
+    <div class="card" style="margin-bottom:14px"><div class="bd">
+      <div class="kv"><span class="k">卡密</span><span class="v mono" id="rKey" style="font-size:12px"></span></div>
+      <div class="kv"><span class="k">类型</span><span class="v" id="rType"></span></div>
+      <div class="kv"><span class="k">已绑定 / 上限</span><span class="v" id="rCount"></span></div>
+    </div></div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="hd"><h2>已绑定的设备</h2>
+        <button class="btn danger sm" id="unbindAllBtn" style="display:none">全部解绑</button></div>
+      <div class="bd" id="devList"></div>
+    </div>
+
+    <button class="btn ghost" style="width:100%" onclick="location.reload()">重新查询</button>
+  </div>
+
+  <!-- 提示区 -->
+  <div id="msgBox" style="margin-top:14px"></div>
+</div>
+
+<script src="local-db.js"></script>
+<script src="common.js"></script>
+<script>
+let CUR_KEY = '';
+
+function showMsg(text, type) {
+  const box = document.getElementById('msgBox');
+  const cls = type === 'ok' ? 'ok' : type === 'err' ? 'err' : 'wait';
+  box.innerHTML = `<div class="card"><div class="bd" style="text-align:center;color:${
+    type === 'ok' ? 'var(--ok)' : type === 'err' ? 'var(--err)' : 'var(--dim)'
+  };font-size:14px;line-height:1.8">${text}</div></div>`;
+}
+
+async function webPost(path, body) {
+  const r = await fetch('/api/web/' + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+
+document.getElementById('queryBtn').onclick = async () => {
+  const key = document.getElementById('cardKey').value.trim().toUpperCase();
+  if (!key) return toast('请输入卡密', 'err');
+  CUR_KEY = key;
+
+  const btn = document.getElementById('queryBtn');
+  btn.disabled = true; btn.textContent = '查询中...';
+  document.getElementById('msgBox').innerHTML = '';
+
+  try {
+    const r = await webPost('bindings', { card_key: key });
+    if (r.code !== 0) {
+      showMsg('查询失败：' + (r.msg || '未知错误'), 'err');
+      return;
+    }
+
+    if (r.self_unbind === false || r.allow_rebind === false) {
+      showMsg('管理员未开放自助解绑<br>请联系客服帮你解绑', 'err');
+      return;
+    }
+
+    document.getElementById('rKey').textContent = r.card_key;
+    document.getElementById('rType').textContent = r.type_name;
+    document.getElementById('rCount').textContent =
+      `${r.devices.length} / ${r.max_devices}`;
+
+    const list = document.getElementById('devList');
+    if (!r.devices.length) {
+      list.innerHTML = '<div class="empty">这张卡还没有绑定任何设备<br>'
+        + '去客户端激活后就会绑定</div>';
+    } else {
+      list.innerHTML = r.devices.map(d => `
+        <div class="dev">
+          <div class="info">
+            <div class="id">${esc(d.device_id)}</div>
+            <div class="meta">首次 ${esc(d.first_seen_text)} · 最近 ${esc(d.last_seen_text)}</div>
+            ${d.ip ? `<div class="meta">IP ${esc(d.ip)}</div>` : ''}
+          </div>
+          <button class="btn danger sm" onclick="unbindOne('${esc(d.device_id)}')">解绑</button>
+        </div>`).join('');
+
+      const allBtn = document.getElementById('unbindAllBtn');
+      allBtn.style.display = r.devices.length > 1 ? '' : 'none';
+      allBtn.onclick = () => unbindAll();
+    }
+
+    document.getElementById('step1').style.display = 'none';
+    document.getElementById('step2').style.display = '';
+  } finally {
+    btn.disabled = false; btn.textContent = '查询已绑定设备';
+  }
+};
+
+document.getElementById('cardKey').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('queryBtn').click();
+});
+
+async function unbindOne(deviceId) {
+  if (!confirm('确定解绑这台设备？\n\n解绑后该设备上的授权会立即失效，\n你可以在新设备上重新激活。')) return;
+  const r = await webPost('unbind', { card_key: CUR_KEY, device_id: deviceId });
+  if (r.code === 0) {
+    showMsg('✅ ' + r.msg, 'ok');
+    setTimeout(() => location.reload(), 1800);
+  } else {
+    showMsg('解绑失败：' + r.msg, 'err');
+  }
+}
+
+async function unbindAll() {
+  if (!confirm('确定解绑全部设备？\n\n所有已激活的设备都会失效，\n之后需要在每台设备上重新激活。')) return;
+  const r = await webPost('unbind', { card_key: CUR_KEY });
+  if (r.code === 0) {
+    showMsg('✅ ' + r.msg, 'ok');
+    setTimeout(() => location.reload(), 1800);
+  } else {
+    showMsg('解绑失败：' + r.msg, 'err');
+  }
+}
+</script>
+</body>
+</html>

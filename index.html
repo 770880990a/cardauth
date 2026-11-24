@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#2f6bff">
+<title>释然团队 · 卡密查询与充值</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .hero{padding:26px 22px 22px;border-radius:16px;margin-bottom:16px;color:#fff;
+    background:linear-gradient(135deg,#2f6bff 0%,#5b8cff 50%,#7a5af8 100%);
+    position:relative;overflow:hidden}
+  .hero h2{font-size:19px;font-weight:650;margin-bottom:4px}
+  .hero p{font-size:13px;opacity:.85}
+  .hero::after{content:"";position:absolute;right:-40px;top:-40px;width:150px;height:150px;
+    border-radius:50%;background:rgba(255,255,255,.1)}
+  .bigval{font-size:32px;font-weight:700;letter-spacing:-1px;line-height:1.2}
+  .lb2{font-size:12.5px;color:var(--dim);margin-bottom:2px}
+  .kv{display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid #f1f3f7;font-size:13.5px}
+  .kv:last-child{border:none}
+  .kv .k{color:var(--dim)}
+  .kv .v{font-weight:500;text-align:right}
+  .tabs{display:flex;gap:8px;margin-bottom:14px;background:#fff;padding:5px;border-radius:10px;
+    border:1px solid var(--line);overflow-x:auto}
+  .tabs button{flex:1;padding:9px 14px;border-radius:7px;background:none;font-size:13.5px;
+    color:var(--dim);white-space:nowrap;min-width:76px}
+  .tabs button.on{background:var(--brand);color:#fff;font-weight:500}
+  .cont{max-width:640px;margin:0 auto;padding:18px 16px 50px}
+</style>
+</head>
+<body>
+<div class="cont">
+  <div class="hero">
+    <h2 id="siteName">卡密查询中心</h2>
+    <p>查询会员状态 · 兑换卡密 · 充值额度</p>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <button data-t="query" class="on">查询卡密</button>
+    <button data-t="redeem">兑换/充值</button>
+    <button data-t="notice">公告</button>
+  </div>
+
+  <!-- 查询 -->
+  <div id="pane-query">
+    <div class="card" style="margin-bottom:14px"><div class="bd">
+      <div class="f" style="margin-bottom:12px"><label>输入你的卡密</label>
+        <input id="qKey" placeholder="ABCD-EFGH-IJKL-MNOP" autocapitalize="characters"
+          style="font-family:ui-monospace,monospace;letter-spacing:1px"></div>
+      <div class="f" style="margin-bottom:14px"><label>机器码（可选，留空则只查状态）</label>
+        <input id="qDev" placeholder="客户端里显示的机器码"></div>
+      <button class="btn" style="width:100%" id="qBtn">查 询</button>
+    </div></div>
+    <div id="qResult"></div>
+  </div>
+
+  <!-- 兑换 -->
+  <div id="pane-redeem" style="display:none">
+    <div class="card" style="margin-bottom:14px"><div class="bd">
+      <div class="f" style="margin-bottom:12px"><label>你的卡密（接受充值的账号）</label>
+        <input id="rKey" placeholder="你的卡密" autocapitalize="characters"
+          style="font-family:ui-monospace,monospace;letter-spacing:1px"></div>
+      <div class="f" style="margin-bottom:12px"><label>充值卡 / 额度卡号</label>
+        <input id="rCard" placeholder="要充值的卡号" autocapitalize="characters"
+          style="font-family:ui-monospace,monospace;letter-spacing:1px"></div>
+      <div class="f" style="margin-bottom:14px"><label>机器码</label>
+        <input id="rDev" placeholder="客户端里显示的机器码"></div>
+      <button class="btn ok" style="width:100%" id="rBtn">确认充值</button>
+      <div class="hint">充值卡类型需为「额度卡」；天卡/周卡/月卡请直接用客户端激活，不要在此充值。</div>
+    </div></div>
+    <div id="rResult"></div>
+  </div>
+
+  <!-- 公告 -->
+  <div id="pane-notice" style="display:none">
+    <div class="card"><div class="bd" id="noticeBox"><div class="empty">加载中...</div></div></div>
+  </div>
+</div>
+
+<script src="local-db.js"></script>
+<script>
+/* ==== common.js 内联（避免外部加载失败） ==== */
+/* 公共 JS —— 请求封装 / 提示 / 工具 / 手机菜单 */
+const API = '';
+
+function toast(msg, type = '') {
+  let el = document.getElementById('toast');
+  if (!el) { el = document.createElement('div'); el.id = 'toast'; document.body.appendChild(el); }
+  el.className = 'on ' + type;
+  el.textContent = msg;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.className = type; el.style.opacity = 0; }, 2800);
+}
+
+function tokenGet(k) { return localStorage.getItem(k); }
+function tokenSet(k, v) { localStorage.setItem(k, v); }
+function tokenDel(k) { localStorage.removeItem(k); }
+
+async function req(url, opt = {}, tokenKey = 'adm_token') {
+  const headers = { 'Content-Type': 'application/json', ...(opt.headers || {}) };
+  const t = tokenGet(tokenKey);
+  if (t) headers.Authorization = 'Bearer ' + t;
+  let res;
+  try {
+    res = await fetch(API + url, {
+      method: opt.method || (opt.body ? 'POST' : 'GET'),
+      headers,
+      body: opt.body ? JSON.stringify(opt.body) : undefined,
+    });
+  } catch (e) {
+    toast('网络错误，请检查服务是否在运行', 'err');
+    throw e;
+  }
+  if (res.status === 401) {
+    tokenDel(tokenKey);
+    toast('登录已失效，请重新登录', 'err');
+    setTimeout(() => { location.href = tokenKey === 'adm_token' ? 'admin.html' : 'agent.html'; }, 900);
+    throw new Error('未登录');
+  }
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('json')) return await res.text();
+  const j = await res.json();
+  if (opt.raw) return j;
+  if (j.code !== 0) { toast(j.msg || '操作失败', 'err'); throw new Error(j.msg || 'failed'); }
+  return j;
+}
+
+function $(s, r = document) { return r.querySelector(s); }
+const $A = (s, r) => Array.from((r || document).querySelectorAll(s));
+function $$(s, r = document) { return [...r.querySelectorAll(s)]; }
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function fmtTime(ms) {
+  if (!ms) return '-';
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function statusTag(st) {
+  const m = {
+    unused: ['未使用', 'wait'], used: ['已使用', 'ok'],
+    expired: ['已过期', 'off'], disabled: ['已封禁', 'err'],
+    pending: ['待审核', 'warn'], paid: ['已打款', 'ok'], rejected: ['已驳回', 'err'],
+  };
+  const [t, c] = m[st] || [st, 'off'];
+  return `<span class="tag ${c}">${t}</span>`;
+}
+
+function copy(text) {
+  const done = () => toast('已复制到剪贴板', 'ok');
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(done).catch(() => fallback());
+  } else fallback();
+  function fallback() {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); }
+    catch (e) { toast('复制失败，请长按手动选择', 'err'); }
+    document.body.removeChild(ta);
+  }
+}
+
+function download(filename, content, type = 'text/plain;charset=utf-8') {
+  const blob = new Blob(['\ufeff' + content], { type });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 3000);
+}
+
+/* 手机侧边栏 */
+function initMobileNav() {
+  const side = $('.side'), mask = $('.side-mask'), bg = $('.burger');
+  if (!side || !bg) return;
+  const close = () => { side.classList.remove('open'); mask && mask.classList.remove('on'); };
+  bg.onclick = () => { side.classList.toggle('open'); mask && mask.classList.toggle('on'); };
+  mask && (mask.onclick = close);
+  $A('.side nav a').forEach(a => a.addEventListener('click', close));
+}
+
+function sideNav(items, active) {
+  return items.map(([id, icon, name]) => `
+    <a href="#${id}" data-tab="${id}" class="${id === active ? 'on' : ''}">
+      <span>${icon}</span><em style="font-style:normal">${name}</em>
+    </a>`).join('');
+}
+
+function openModal(title, bodyHtml, footHtml) {
+  let m = document.getElementById('__modal');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = '__modal';
+    m.className = 'mask';
+    m.innerHTML = `<div class="modal">
+      <div class="mh"><h3></h3><button class="x">&times;</button></div>
+      <div class="mb"></div><div class="mf"></div></div>`;
+    document.body.appendChild(m);
+    m.querySelector('.x').onclick = closeModal;
+    m.onclick = e => { if (e.target === m) closeModal(); };
+  }
+  m.querySelector('.mh h3').textContent = title;
+  m.querySelector('.mb').innerHTML = bodyHtml;
+  m.querySelector('.mf').innerHTML = footHtml || '';
+  m.classList.add('on');
+  return m;
+}
+function closeModal() {
+  const m = document.getElementById('__modal');
+  if (m) m.classList.remove('on');
+}
+
+/* 记录当前页签，刷新后保持 */
+function tabRemember(key, def) {
+  const h = (location.hash || '').replace('#', '');
+  return h || sessionStorage.getItem(key) || def;
+}
+function tabSet(key, id) { sessionStorage.setItem(key, id); }
+
+</script>
+<script>
+/* 用户端：不带签名调用会失败，所以这里用一个公开的只读接口 + 免签模式
+   实际部署时若开启了签名校验，用户端页面走 /api/web/* （服务端代签） */
+const NO_SIGN = location.search.includes('nosign=0') ? true : false;
+
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#tabs button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on');
+  ['query', 'redeem', 'notice'].forEach(t => {
+    document.getElementById('pane-' + t).style.display = (t === b.dataset.t) ? '' : 'none';
+  });
+  if (b.dataset.t === 'notice') loadNotice();
+});
+
+async function loadCfg() {
+  try {
+    const r = await fetch('/api/client/config').then(x => x.json());
+    if (r.site_name) document.getElementById('siteName').textContent = r.site_name;
+  } catch (e) {}
+}
+
+async function loadNotice() {
+  const box = document.getElementById('noticeBox');
+  try {
+    const r = await fetch('/api/client/notice').then(x => x.json());
+    if (!r.notices || !r.notices.length) { box.innerHTML = '<div class="empty">暂无公告</div>'; return; }
+    box.innerHTML = r.notices.map(n => `
+      <div style="padding:12px 0;border-bottom:1px solid #f1f3f7">
+        <div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:5px">
+          <b style="font-size:14px">${esc(n.title)}</b>
+          ${n.ver ? `<span class="tag wait">v${esc(n.ver)}</span>` : ''}
+        </div>
+        <div style="font-size:13px;color:var(--dim);white-space:pre-wrap">${esc(n.content || '')}</div>
+      </div>`).join('');
+  } catch (e) { box.innerHTML = '<div class="empty">加载失败</div>'; }
+}
+
+/* 网页端代签接口 */
+async function webCall(path, body) {
+  const r = await fetch('/api/web/' + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+
+function renderCard(c) {
+  const u = c.user || {};
+  const isDay = c.unit === 'day';
+  return `
+  <div class="card" style="margin-bottom:14px"><div class="bd">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div>
+        <div class="lb2">当前状态</div>
+        <div style="font-size:17px;font-weight:650">${isDay
+          ? (u.is_vip ? `VIP 会员 · 剩 ${u.remain_days} 天` : '会员已到期')
+          : `额度卡 · 剩 ${u.credit} 额度`}</div>
+      </div>
+      <span class="tag ${u.is_vip || !isDay ? 'ok' : 'err'}">${c.type_name}</span>
+    </div>
+    <div class="kv"><span class="k">卡密</span><span class="v mono" style="font-size:12px">${esc(c.card_key)}</span></div>
+    ${isDay ? `<div class="kv"><span class="k">到期时间</span><span class="v">${esc(u.expire_at_text || '-')}</span></div>
+      <div class="kv"><span class="k">剩余天数</span><span class="v">${u.remain_days || 0} 天</span></div>` : ''}
+    <div class="kv"><span class="k">剩余额度</span><span class="v" style="color:var(--brand);font-size:15px">${u.credit || 0}</span></div>
+    <div class="kv"><span class="k">累计充值</span><span class="v">${u.total_credit || 0}</span></div>
+    <div class="kv"><span class="k">已消耗</span><span class="v">${u.used_credit || 0}</span></div>
+    <div class="kv"><span class="k">绑定设备</span><span class="v" style="font-size:12px">${(c.devices || []).length} / ${c.max_devices || 1}</span></div>
+    <div class="kv"><span class="k">激活时间</span><span class="v">${c.activated_at ? new Date(c.activated_at).toLocaleString('zh-CN') : '-'}</span></div>
+  </div></div>`;
+}
+
+document.getElementById('qBtn').onclick = async () => {
+  const key = document.getElementById('qKey').value.trim().toUpperCase();
+  const dev = document.getElementById('qDev').value.trim();
+  if (!key) return toast('请输入卡密', 'err');
+  const box = document.getElementById('qResult');
+  box.innerHTML = '<div class="card"><div class="bd"><div class="empty">查询中...</div></div></div>';
+  const r = await webCall('info', { card_key: key, device_id: dev });
+  if (r.code !== 0) {
+    box.innerHTML = `<div class="card"><div class="bd"><div class="empty" style="color:var(--err)">
+      ${esc(r.msg || '查询失败')}（错误码 ${r.code}）</div></div></div>`;
+    return;
+  }
+  box.innerHTML = renderCard(r.card);
+};
+
+document.getElementById('rBtn').onclick = async () => {
+  const key = document.getElementById('rKey').value.trim().toUpperCase();
+  const card = document.getElementById('rCard').value.trim().toUpperCase();
+  const dev = document.getElementById('rDev').value.trim();
+  if (!key || !card) return toast('请填写完整', 'err');
+  const r = await webCall('redeem', { card_key: key, redeem_key: card, device_id: dev });
+  const box = document.getElementById('rResult');
+  if (r.code !== 0) {
+    box.innerHTML = `<div class="card"><div class="bd"><div class="empty" style="color:var(--err)">
+      ${esc(r.msg)}（${r.code}）</div></div></div>`;
+    return;
+  }
+  toast(r.msg, 'ok');
+  box.innerHTML = `<div class="card"><div class="bd" style="text-align:center">
+    <div style="font-size:15px;font-weight:600;color:var(--ok);margin-bottom:8px">充值成功</div>
+    <div class="bigval" style="color:var(--brand)">${r.balance}</div>
+    <div class="lb2">当前剩余额度</div>
+  </div></div>`;
+};
+
+loadCfg();
+</script>
+</body>
+</html>

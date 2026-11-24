@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>诊断工具 · 释然团队</title>
+<style>
+body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:#f5f6fa;
+  margin:0;padding:24px;color:#1f2430;line-height:1.7}
+.box{max-width:760px;margin:0 auto;background:#fff;border-radius:12px;padding:24px;
+  box-shadow:0 2px 10px rgba(0,0,0,.06)}
+h1{font-size:20px;margin:0 0 6px}
+.sub{color:#7b8494;font-size:13px;margin-bottom:20px}
+.item{padding:11px 14px;border-radius:8px;margin-bottom:9px;font-size:13.5px;
+  display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
+.ok{background:#e8f8f0;color:#0e9f5d}
+.err{background:#fef0ef;color:#d92d20}
+.wait{background:#eef2ff;color:#3b5bdb}
+.item b{flex-shrink:0}
+.item span{word-break:break-all;text-align:right;font-family:ui-monospace,monospace;font-size:12.5px}
+.btn{padding:10px 20px;border:none;border-radius:8px;background:#2f6bff;color:#fff;
+  font-size:14px;cursor:pointer;margin-top:14px}
+.btn:hover{background:#1d51d8}
+pre{background:#0f1522;color:#c9d5e8;padding:14px;border-radius:8px;overflow:auto;
+  font-size:12px;line-height:1.7;max-height:320px}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>🔍 系统诊断</h1>
+  <div class="sub">检查服务是否正常、登录接口是否可用。把结果截图发给技术支持即可定位问题。</div>
+  <div id="out"></div>
+  <button class="btn" onclick="run()">重新检测</button>
+  <div id="detail"></div>
+</div>
+
+<script src="local-db.js"></script>
+<script>
+const out = document.getElementById('out');
+
+function line(name, ok, msg) {
+  const d = document.createElement('div');
+  d.className = 'item ' + (ok === null ? 'wait' : ok ? 'ok' : 'err');
+  d.innerHTML = `<b>${name}</b><span>${msg || ''}</span>`;
+  out.appendChild(d);
+}
+
+async function run() {
+  out.innerHTML = '';
+  document.getElementById('detail').innerHTML = '';
+
+  // 1. 页面信息
+  line('当前地址', true, location.href);
+  line('浏览器', true, navigator.userAgent.slice(0, 80));
+
+  // 2. 页面 JS 是否正常执行
+  line('页面脚本执行', true, '正常（能显示这一行说明 JS 没崩）');
+
+  // 3. localStorage
+  try {
+    localStorage.setItem('__t', '1');
+    localStorage.removeItem('__t');
+    line('本地存储 localStorage', true, '可用');
+  } catch (e) {
+    line('本地存储 localStorage', false, '不可用：' + e.message + '（无痕模式可能导致）');
+  }
+
+  // 4. 健康检查
+  try {
+    const t0 = Date.now();
+    const r = await fetch('/health', { cache: 'no-store' });
+    const j = await r.json();
+    line('服务健康检查', j.status === 'ok', `ok，版本 ${j.version}，延迟 ${Date.now() - t0}ms`);
+  } catch (e) {
+    line('服务健康检查', false, '连接失败：' + e.message + ' → 服务可能没启动');
+    return;
+  }
+
+  // 5. 登录接口
+  try {
+    const r = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'admin888' }),
+      cache: 'no-store',
+    });
+    const j = await r.json();
+    if (j.code === 0 && j.token) {
+      line('登录接口', true, '正常，成功拿到令牌');
+      localStorage.setItem('__test_token', j.token);
+
+      // 6. 带令牌访问数据接口
+      const r2 = await fetch('/api/admin/stats', {
+        headers: { Authorization: 'Bearer ' + j.token }, cache: 'no-store',
+      });
+      const j2 = await r2.json();
+      line('数据接口(带令牌)', j2.code === 0,
+        j2.code === 0 ? `正常，卡密总数 ${j2.cards_total}` : '失败：' + j2.msg);
+    } else {
+      line('登录接口', false, `返回 code=${j.code}，${j.msg}`);
+    }
+  } catch (e) {
+    line('登录接口', false, '请求失败：' + e.message);
+  }
+
+  // 7. 静态资源
+  for (const f of ['/common.js', '/style.css']) {
+    try {
+      const r = await fetch(f, { cache: 'no-store' });
+      line('资源 ' + f, r.ok, r.ok ? `HTTP ${r.status}` : `HTTP ${r.status}`);
+    } catch (e) {
+      line('资源 ' + f, false, e.message);
+    }
+  }
+
+  // 8. 管理页 HTML 是否是最新版
+  try {
+    const html = await fetch('/admin?diag=1', { cache: 'no-store' }).then(r => r.text());
+    const hasOldBug = html.includes('不要写 `if (ok)');
+    line('管理页面版本', !hasOldBug,
+      hasOldBug ? '❌ 服务端返回的是旧版（有语法错误）' : '✅ 是最新版');
+
+    // 提取内联脚本做语法检查
+    const m = html.match(/<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/);
+    if (m) {
+      try {
+        new Function(m[1]);
+        line('管理页面脚本语法', true, '正确');
+      } catch (e) {
+        line('管理页面脚本语法', false, '❌ 语法错误：' + e.message);
+        document.getElementById('detail').innerHTML =
+          '<pre>' + e.message.replace(/</g, '&lt;') + '</pre>';
+      }
+    }
+  } catch (e) {
+    line('管理页面版本', false, e.message);
+  }
+
+  line('—', true, '检测完成，上面全是绿色才能正常登录');
+}
+
+run();
+</script>
+</body>
+</html>

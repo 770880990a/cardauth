@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#101828">
+<title>释然团队 · 代理后台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="loginView" class="login-wrap">
+  <div class="login-box">
+    <h2>释然团队</h2>
+    <p class="sub">卡密分销管理系统</p>
+    <div class="f"><label>代理账号</label><input id="lgUser" placeholder="请输入账号" autocomplete="username"></div>
+    <div class="f"><label>密码</label><input id="lgPwd" type="password" placeholder="请输入密码" autocomplete="current-password"></div>
+    <button class="btn" id="lgBtn">登 录</button>
+    <div class="hint" style="text-align:center;margin-top:16px">
+      还没有账号？<a href="register.html">立即注册代理</a>
+    </div>
+  </div>
+</div>
+
+<div class="wrap" id="appView" style="display:none">
+  <div class="side-mask"></div>
+  <aside class="side">
+    <div class="logo"><i>A</i><span>释然团队</span></div>
+    <nav id="nav"></nav>
+    <div class="foot" id="sideFoot"></div>
+  </aside>
+  <div class="main">
+    <header class="top">
+      <button class="burger"><span></span><span></span><span></span></button>
+      <h1 id="pageTitle">概览</h1>
+      <div class="u">
+        <span class="uname" id="whoami">-</span>
+        <button class="btn ghost sm" id="btnLogout">退出</button>
+      </div>
+    </header>
+    <div class="body" id="pageBody"></div>
+  </div>
+</div>
+
+<script src="local-db.js"></script>
+<script>
+/* ==== common.js 内联（避免外部加载失败） ==== */
+/* 公共 JS —— 请求封装 / 提示 / 工具 / 手机菜单 */
+const API = '';
+
+function toast(msg, type = '') {
+  let el = document.getElementById('toast');
+  if (!el) { el = document.createElement('div'); el.id = 'toast'; document.body.appendChild(el); }
+  el.className = 'on ' + type;
+  el.textContent = msg;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.className = type; el.style.opacity = 0; }, 2800);
+}
+
+function tokenGet(k) { return localStorage.getItem(k); }
+function tokenSet(k, v) { localStorage.setItem(k, v); }
+function tokenDel(k) { localStorage.removeItem(k); }
+
+async function req(url, opt = {}, tokenKey = 'adm_token') {
+  const headers = { 'Content-Type': 'application/json', ...(opt.headers || {}) };
+  const t = tokenGet(tokenKey);
+  if (t) headers.Authorization = 'Bearer ' + t;
+  let res;
+  try {
+    res = await fetch(API + url, {
+      method: opt.method || (opt.body ? 'POST' : 'GET'),
+      headers,
+      body: opt.body ? JSON.stringify(opt.body) : undefined,
+    });
+  } catch (e) {
+    toast('网络错误，请检查服务是否在运行', 'err');
+    throw e;
+  }
+  if (res.status === 401) {
+    tokenDel(tokenKey);
+    toast('登录已失效，请重新登录', 'err');
+    setTimeout(() => { location.href = tokenKey === 'adm_token' ? 'admin.html' : 'agent.html'; }, 900);
+    throw new Error('未登录');
+  }
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('json')) return await res.text();
+  const j = await res.json();
+  if (opt.raw) return j;
+  if (j.code !== 0) { toast(j.msg || '操作失败', 'err'); throw new Error(j.msg || 'failed'); }
+  return j;
+}
+
+function $(s, r = document) { return r.querySelector(s); }
+const $A = (s, r) => Array.from((r || document).querySelectorAll(s));
+function $$(s, r = document) { return [...r.querySelectorAll(s)]; }
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function fmtTime(ms) {
+  if (!ms) return '-';
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function statusTag(st) {
+  const m = {
+    unused: ['未使用', 'wait'], used: ['已使用', 'ok'],
+    expired: ['已过期', 'off'], disabled: ['已封禁', 'err'],
+    pending: ['待审核', 'warn'], paid: ['已打款', 'ok'], rejected: ['已驳回', 'err'],
+  };
+  const [t, c] = m[st] || [st, 'off'];
+  return `<span class="tag ${c}">${t}</span>`;
+}
+
+function copy(text) {
+  const done = () => toast('已复制到剪贴板', 'ok');
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(done).catch(() => fallback());
+  } else fallback();
+  function fallback() {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); }
+    catch (e) { toast('复制失败，请长按手动选择', 'err'); }
+    document.body.removeChild(ta);
+  }
+}
+
+function download(filename, content, type = 'text/plain;charset=utf-8') {
+  const blob = new Blob(['\ufeff' + content], { type });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 3000);
+}
+
+/* 手机侧边栏 */
+function initMobileNav() {
+  const side = $('.side'), mask = $('.side-mask'), bg = $('.burger');
+  if (!side || !bg) return;
+  const close = () => { side.classList.remove('open'); mask && mask.classList.remove('on'); };
+  bg.onclick = () => { side.classList.toggle('open'); mask && mask.classList.toggle('on'); };
+  mask && (mask.onclick = close);
+  $A('.side nav a').forEach(a => a.addEventListener('click', close));
+}
+
+function sideNav(items, active) {
+  return items.map(([id, icon, name]) => `
+    <a href="#${id}" data-tab="${id}" class="${id === active ? 'on' : ''}">
+      <span>${icon}</span><em style="font-style:normal">${name}</em>
+    </a>`).join('');
+}
+
+function openModal(title, bodyHtml, footHtml) {
+  let m = document.getElementById('__modal');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = '__modal';
+    m.className = 'mask';
+    m.innerHTML = `<div class="modal">
+      <div class="mh"><h3></h3><button class="x">&times;</button></div>
+      <div class="mb"></div><div class="mf"></div></div>`;
+    document.body.appendChild(m);
+    m.querySelector('.x').onclick = closeModal;
+    m.onclick = e => { if (e.target === m) closeModal(); };
+  }
+  m.querySelector('.mh h3').textContent = title;
+  m.querySelector('.mb').innerHTML = bodyHtml;
+  m.querySelector('.mf').innerHTML = footHtml || '';
+  m.classList.add('on');
+  return m;
+}
+function closeModal() {
+  const m = document.getElementById('__modal');
+  if (m) m.classList.remove('on');
+}
+
+/* 记录当前页签，刷新后保持 */
+function tabRemember(key, def) {
+  const h = (location.hash || '').replace('#', '');
+  return h || sessionStorage.getItem(key) || def;
+}
+function tabSet(key, id) { sessionStorage.setItem(key, id); }
+
+</script>
+<script>
+const NAV = [
+  ['dash', '▤', '我的概览'],
+  ['gen',  '＋', '生成卡密'],
+  ['cards','▦', '我的卡密'],
+  ['money','¥', '余额与提现'],
+  ['docs', '⌗', '拿货说明'],
+];
+let CUR = 'dash';
+let ME = null;
+
+const lgBtn = $('#lgBtn');
+$('#lgPwd').addEventListener('keydown', e => e.key === 'Enter' && doLogin());
+lgBtn.onclick = doLogin;
+
+async function doLogin() {
+  const username = $('#lgUser').value.trim(), password = $('#lgPwd').value;
+  if (!username || !password) return toast('请输入账号密码', 'err');
+  lgBtn.disabled = true; lgBtn.textContent = '登录中...';
+  try {
+    const j = await req('/api/agent/login', { body: { username, password } }, 'nokey');
+    tokenSet('agent_token', j.token);
+    tokenSet('agent_user', j.username);
+    boot();
+  } catch (e) {} finally { lgBtn.disabled = false; lgBtn.textContent = '登 录'; }
+}
+$('#btnLogout').onclick = () => { tokenDel('agent_token'); location.reload(); };
+
+async function boot() {
+  if (!tokenGet('agent_token')) return;
+  try { ME = await req('/api/agent/me', {}, 'agent_token'); }
+  catch (e) { return; }
+  $('#loginView').style.display = 'none';
+  $('#appView').style.display = 'flex';
+  $('#whoami').textContent = ME.agent.nickname || ME.agent.username;
+  $('#sideFoot').textContent = '余额 ¥' + (ME.agent.balance || 0).toFixed(2);
+  $('#nav').innerHTML = sideNav(NAV, CUR);
+  $$('#nav a').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.tab); });
+  initMobileNav();
+  go(tabRemember('agent_tab', 'dash'), true);
+}
+
+function go(tab, silent) {
+  CUR = tab; tabSet('agent_tab', tab);
+  $('#pageTitle').textContent = (NAV.find(n => n[0] === tab) || [])[2];
+  $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
+  if (!silent) location.hash = tab;
+  window.scrollTo(0, 0);
+  const el = $('#pageBody');
+  el.innerHTML = '<div class="empty">加载中...</div>';
+  PAGES[tab] && PAGES[tab](el).catch(e => el.innerHTML = '<div class="empty">' + esc(e.message) + '</div>');
+}
+
+const PAGES = {};
+
+PAGES.dash = async (el) => {
+  const d = await req('/api/agent/me', {}, 'agent_token');
+  ME = d;
+  const a = d.agent, s = d.stats;
+  el.innerHTML = `
+  <div class="stats">
+    <div class="st b"><div class="lb">账户余额</div><div class="vl" style="font-size:23px">¥${a.balance.toFixed(2)}</div>
+      <div class="sub">可用余额</div></div>
+    <div class="st g"><div class="lb">已生成卡密</div><div class="vl">${s.card_total}</div>
+      <div class="sub">未使用 ${s.card_unused} · 已使用 ${s.card_used}</div></div>
+    <div class="st p"><div class="lb">我的下级</div><div class="vl">${s.child_count}</div>
+      <div class="sub">下级生成卡你可得 20% 分润</div></div>
+    <div class="st o"><div class="lb">当前等级</div><div class="vl" style="font-size:21px">${['','普通','银牌','金牌','总代'][a.level] || a.level}</div></div>
+  </div>
+  <div class="grid2">
+    <div class="card"><div class="hd"><h2>我的信息</h2></div><div class="bd">
+      <table class="tb">
+        <tr><td style="color:var(--dim)">代理账号</td><td style="text-align:right">${esc(a.username)}</td></tr>
+        <tr><td style="color:var(--dim)">昵称</td><td style="text-align:right">${esc(a.nickname || '-')}</td></tr>
+        <tr><td style="color:var(--dim)">联系方式</td><td style="text-align:right">${esc(a.contact || '-')}</td></tr>
+        <tr><td style="color:var(--dim)">上级代理</td><td style="text-align:right">${a.parent_id ? '#' + a.parent_id : '无（一级代理）'}</td></tr>
+        <tr><td style="color:var(--dim)">API 密钥</td><td style="text-align:right">
+          <span class="mono" style="font-size:11px">${esc((a.api_key || '').slice(0, 16))}…</span>
+          <button class="btn ghost sm" onclick="copy('${esc(a.api_key)}')">复制</button></td></tr>
+      </table>
+    </div></div>
+    <div class="card"><div class="hd"><h2>可生成的卡类型</h2></div><div class="bd">
+      <table class="tb">
+        <thead><tr><th>应用</th><th>卡类型</th><th>面值</th></tr></thead>
+        <tbody>${(d.types || []).map(t => `<tr>
+          <td style="font-size:12px">${esc((d.apps || []).find(x => x.app_id === t.app_id)?.name || t.app_id)}</td>
+          <td>${esc(t.name)}</td>
+          <td>${t.unit === 'day' ? t.value + ' 天' : t.value + ' 额度'}</td></tr>`).join('')}</tbody>
+      </table>
+    </div></div>
+  </div>`;
+};
+
+PAGES.gen = async (el) => {
+  const d = await req('/api/agent/me', {}, 'agent_token');
+  ME = d;
+  el.innerHTML = `
+  <div class="grid2">
+    <div class="card"><div class="hd"><h2>生成卡密</h2></div>
+      <div class="bd" style="display:flex;flex-direction:column;gap:14px">
+        <div class="f"><label>所属应用</label>
+          <select id="gApp">${(d.apps || []).map(a => `<option value="${esc(a.app_id)}">${esc(a.name)}</option>`).join('')}</select>
+        </div>
+        <div class="f"><label>卡类型</label><select id="gType"></select></div>
+        <div class="f"><label>数量</label><input id="gCount" type="number" value="10" min="1" max="5000"></div>
+        <div class="f"><label>每张绑定设备数</label><input id="gDev" type="number" value="1" min="1" max="10"></div>
+        <div class="f"><label>备注</label><input id="gRemark" placeholder="选填"></div>
+        <button class="btn" id="gBtn">确认生成</button>
+      </div>
+    </div>
+    <div class="card"><div class="hd"><h2>生成结果</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn ghost sm" id="gCopy">复制</button>
+        <button class="btn ok sm" id="gDl">下载</button>
+      </div></div>
+      <div class="bd"><textarea id="gOut" rows="16" style="font-family:ui-monospace,monospace;font-size:12.5px"
+        placeholder="生成后显示在这里"></textarea>
+        <div class="hint" id="gInfo"></div></div>
+    </div>
+  </div>`;
+
+  // 按应用筛选卡类型，并分时长卡 / 额度卡两组
+  function refreshTypes() {
+    const appId = $('#gApp').value;
+    const list = (d.types || []).filter(t => t.app_id === appId);
+    const day = list.filter(t => t.unit === 'day');
+    const cr = list.filter(t => t.unit === 'credit' || t.unit === 'count');
+    let html = '';
+    if (day.length) html += '<optgroup label="── 时长卡 ──">' +
+      day.map(t => `<option value="${esc(t.code)}">${esc(t.name)} · ${t.value}天</option>`).join('') + '</optgroup>';
+    if (cr.length) html += '<optgroup label="── 额度卡 ──">' +
+      cr.map(t => `<option value="${esc(t.code)}">${esc(t.name)} · ${t.value}额度</option>`).join('') + '</optgroup>';
+    $('#gType').innerHTML = html || '<option value="">（该应用暂无卡类型）</option>';
+  }
+  $('#gApp').onchange = refreshTypes;
+  refreshTypes();
+
+  $('#gBtn').onclick = async () => {
+    const app_id = $('#gApp').value;
+    const type_code = $('#gType').value;
+    const count = parseInt($('#gCount').value, 10) || 1;
+    if (!type_code) return toast('请选择卡类型', 'err');
+    $('#gBtn').disabled = true; $('#gBtn').textContent = '生成中...';
+    try {
+      const j = await req('/api/agent/cards/generate', {
+        body: { app_id, type_code, count, max_devices: parseInt($('#gDev').value, 10) || 1, remark: $('#gRemark').value }
+      }, 'agent_token');
+      $('#gOut').value = j.cards.join('\n');
+      $('#gInfo').textContent = `批次 ${j.batch} · ${j.count} 张`;
+      toast(j.msg, 'ok');
+      boot();
+    } catch (e) {} finally { $('#gBtn').disabled = false; $('#gBtn').textContent = '确认生成'; }
+  };
+  $('#gCopy').onclick = () => $('#gOut').value && copy($('#gOut').value);
+  $('#gDl').onclick = () => $('#gOut').value ? download('卡密_' + Date.now() + '.txt', $('#gOut').value) : toast('暂无数据', 'err');
+};
+
+let agQ = { page: 1, status: '' };
+PAGES.cards = async (el) => {
+  el.innerHTML = `
+  <div class="card" style="margin-bottom:14px"><div class="bd"><div class="row">
+    <div class="f"><label>状态筛选</label><select id="cStatus">
+      <option value="">全部</option><option value="unused">未使用</option>
+      <option value="used">已使用</option><option value="disabled">已封禁</option></select></div>
+    <div class="f" style="flex:0 0 auto"><button class="btn" id="cSearch">查询</button></div>
+  </div></div></div>
+  <div class="card"><div class="hd"><h2>我的卡密 <span class="hint" id="cTotal" style="margin:0"></span></h2></div>
+    <div class="tbwrap" id="cTb"><div class="empty">加载中...</div></div>
+    <div class="pg" id="cPg"></div></div>`;
+  $('#cStatus').value = agQ.status;
+  $('#cSearch').onclick = () => { agQ.status = $('#cStatus').value; agQ.page = 1; loadAgCards(); };
+  loadAgCards();
+};
+
+async function loadAgCards() {
+  const d = await req('/api/agent/cards?page=' + agQ.page + '&size=20&status=' + agQ.status, {}, 'agent_token');
+  $('#cTotal').textContent = `共 ${d.total} 张`;
+  const box = $('#cTb');
+  if (!d.list.length) { box.innerHTML = '<div class="empty">暂无卡密</div>'; $('#cPg').innerHTML = ''; return; }
+  box.innerHTML = `<table class="tb tb-mobile">
+    <thead><tr><th>卡密</th><th>类型</th><th>状态</th><th>到期</th><th>设备</th><th>创建</th></tr></thead>
+    <tbody>${d.list.map(c => `<tr>
+      <td data-l="卡密"><span class="mono">${esc(c.card_key)}</span>
+        <button class="btn ghost sm" style="padding:1px 7px" onclick="copy('${esc(c.card_key)}')">复制</button></td>
+      <td data-l="类型">${esc(c.type_name)}</td>
+      <td data-l="状态">${statusTag(c.status)}</td>
+      <td data-l="到期">${c.expire_at ? new Date(c.expire_at).toLocaleDateString('zh-CN') : '-'}</td>
+      <td data-l="设备" style="font-size:11.5px">${c.owner_device ? esc(c.owner_device.slice(0, 14)) : '-'}</td>
+      <td data-l="创建">${fmtTime(c.created_at)}</td></tr>`).join('')}</tbody></table>`;
+  const pages = Math.ceil(d.total / 20);
+  $('#cPg').innerHTML = `<span>第 ${d.page}/${pages || 1} 页</span>
+    <button ${d.page <= 1 ? 'disabled' : ''} onclick="agPage(${d.page - 1})">上一页</button>
+    <button ${d.page >= pages ? 'disabled' : ''} onclick="agPage(${d.page + 1})">下一页</button>`;
+}
+function agPage(p) { agQ.page = p; loadAgCards(); }
+
+PAGES.money = async (el) => {
+  const [m, logs, wds] = await Promise.all([
+    req('/api/agent/me', {}, 'agent_token'),
+    req('/api/agent/logs', {}, 'agent_token'),
+    req('/api/agent/withdrawals', {}, 'agent_token'),
+  ]);
+  ME = m;
+  el.innerHTML = `
+  <div class="stats">
+    <div class="st b"><div class="lb">可用余额</div><div class="vl" style="font-size:24px">¥${m.agent.balance.toFixed(2)}</div></div>
+    <div class="st g"><div class="lb">累计卡密</div><div class="vl">${m.stats.card_total}</div></div>
+  </div>
+  <div class="grid2">
+    <div class="card"><div class="hd"><h2>申请提现</h2></div><div class="bd" style="display:flex;flex-direction:column;gap:12px">
+      <div class="f"><label>提现金额 ¥</label><input id="wAmt" type="number" step="0.01" placeholder="最低 10 元"></div>
+      <div class="f"><label>收款账号（支付宝/微信/银行卡）</label>
+        <textarea id="wAcc" rows="2" placeholder="支付宝 138****1234 张三"></textarea></div>
+      <button class="btn ok" id="wBtn">提交申请</button>
+      <div class="hint">提现由管理员审核打款，被驳回会自动退回余额。</div>
+    </div></div>
+    <div class="card"><div class="hd"><h2>提现记录</h2></div>
+      <div class="tbwrap">${!wds.list.length ? '<div class="empty">暂无记录</div>' :
+      `<table class="tb tb-mobile"><thead><tr><th>金额</th><th>状态</th><th>时间</th></tr></thead>
+        <tbody>${wds.list.map(w => `<tr>
+          <td data-l="金额">¥${w.amount}</td>
+          <td data-l="状态">${statusTag(w.status)}</td>
+          <td data-l="时间">${fmtTime(w.created_at)}</td></tr>`).join('')}</tbody></table>`}</div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px"><div class="hd"><h2>资金流水</h2></div>
+    <div class="tbwrap">${!logs.list.length ? '<div class="empty">暂无流水</div>' :
+    `<table class="tb tb-mobile"><thead><tr><th>类型</th><th>变动</th><th>余额</th><th>说明</th><th>时间</th></tr></thead>
+      <tbody>${logs.list.map(l => `<tr>
+        <td data-l="类型">${({generate:'生成卡',profit:'下级分润',withdraw:'提现',manual:'管理员'})[l.type] || l.type}</td>
+        <td data-l="变动" style="color:${l.delta >= 0 ? 'var(--ok)' : 'var(--err)'};font-weight:600">
+          ${l.delta >= 0 ? '+' : ''}${l.delta.toFixed(2)}</td>
+        <td data-l="余额">¥${l.balance.toFixed(2)}</td>
+        <td data-l="说明" style="font-size:12px">${esc(l.remark || '-')}</td>
+        <td data-l="时间" style="font-size:12px">${fmtTime(l.created_at)}</td></tr>`).join('')}</tbody></table>`}</div>
+  </div>`;
+
+  $('#wBtn').onclick = async () => {
+    const amount = parseFloat($('#wAmt').value);
+    if (!amount || amount < 10) return toast('提现金额不低于 10 元', 'err');
+    await req('/api/agent/withdraw', { body: { amount, account: $('#wAcc').value } }, 'agent_token');
+    toast('申请已提交', 'ok'); go('money');
+  };
+};
+
+PAGES.docs = async (el) => {
+  el.innerHTML = `
+  <div class="card"><div class="bd">
+    <h2 style="font-size:16px;margin-bottom:12px">代理拿货说明</h2>
+    <div style="font-size:13.5px;line-height:2;color:#3a4354">
+      <p><b>1. 拿货方式</b><br>
+      在「生成卡密」页面选好应用、卡类型和数量，点确认即时出卡。</p>
+      <p style="margin-top:10px"><b>2. 多应用说明</b><br>
+      后台可能配置了多个应用（不同软件）。每个应用的卡密互不通用，生成时要先选对应用。</p>
+      <p style="margin-top:10px"><b>3. 下级分润</b><br>
+      别人通过你的邀请注册成代理后，他每次生成卡密，你自动获得 20% 的分润，实时到余额。</p>
+      <p style="margin-top:10px"><b>4. 邀请链接</b><br>
+      把你的代理账号作为「上级账号」发给对方，让对方在注册页填写即可绑定关系：<br>
+      <code class="inl">${location.origin}/register?parent=${esc(ME.agent.username)}</code>
+      <button class="btn ghost sm" onclick="copy('${location.origin}/register?parent=${esc(ME.agent.username)}')">复制</button></p>
+      <p style="margin-top:10px"><b>5. 售后与解绑</b><br>
+      客户换电脑需要解绑，请联系管理员在后台解绑；代理自身无解绑权限。</p>
+      <p style="margin-top:10px"><b>6. 卡密保管</b><br>
+      生成的卡密请立即下载保存。已生成的卡密不可退回，未使用的可在后台封禁止损。</p>
+    </div>
+  </div></div>`;
+};
+
+boot();
+</script>
+</body>
+</html>
